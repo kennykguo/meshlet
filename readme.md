@@ -561,3 +561,5 @@ meshlet will begin as a socket and linux-routing lab, then grow into an authenti
 project purpose
 
 the project’s purpose is to make internet routing, transport ports, public and private addressing, nat, stateful firewalls, cryptographic handshakes, distributed membership, overlay networks, and subnet routing observable through code and packet traces rather than only through diagrams.
+
+containers?
