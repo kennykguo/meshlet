@@ -2,8 +2,8 @@ use std::env;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
 
-fn tcp_server() {
-    let listener = TcpListener::bind("127.0.0.1:8000").expect("failed to bind TCP listener");
+fn tcp_server(bind_addr: &str) {
+    let listener = TcpListener::bind(bind_addr).expect("failed to bind TCP listener");
 
     println!("local: {}", listener.local_addr().unwrap());
 
@@ -27,9 +27,8 @@ fn tcp_server() {
     println!("bytes sent: {bytes_received}");
 }
 
-fn tcp_client() {
-    // ephermal port is created. 8000 is the remote here when you call this
-    let mut stream = TcpStream::connect("127.0.0.1:8000").expect("failed to connect to TCP server");
+fn tcp_client(server_addr: &str) {
+    let mut stream = TcpStream::connect(server_addr).expect("failed to connect to TCP server");
 
     println!("local: {}", stream.local_addr().unwrap());
     println!("remote: {}", stream.peer_addr().unwrap());
@@ -50,9 +49,8 @@ fn tcp_client() {
     println!("exact bytes: {response:?}");
 }
 
-fn udp_server() {
-    let socket = UdpSocket::bind("127.0.0.1:8000").expect("failed to bind UDP socket");
-
+fn udp_server(bind_addr: &str) {
+    let socket = UdpSocket::bind(bind_addr).expect("failed to bind UDP socket");
     println!("local: {}", socket.local_addr().unwrap());
 
     let mut buffer = [0_u8; 1024];
@@ -72,10 +70,9 @@ fn udp_server() {
     println!("bytes sent: {bytes_sent}");
 }
 
-fn udp_client() {
-    let socket = UdpSocket::bind("127.0.0.1:0").expect("failed to bind UDP socket"); // choose an ephermal port
+fn udp_client(bind_addr: &str, server_addr: &str) {
+    let socket = UdpSocket::bind(bind_addr).expect("failed to bind UDP socket");
 
-    let server_addr = "127.0.0.1:8000";
     let message = b"hello from udp client\n";
 
     println!("local: {}", socket.local_addr().unwrap());
@@ -99,13 +96,46 @@ fn udp_client() {
 }
 
 fn main() {
-    let mode = env::args().nth(1); // 1st argument - 0 is the program name
+    let mut args = env::args().skip(1);
 
-    match mode.as_deref() {
-        Some("tcp-server") => tcp_server(),
-        Some("tcp-client") => tcp_client(),
-        Some("udp-server") => udp_server(),
-        Some("udp-client") => udp_client(),
-        _ => eprintln!("Usage: meshlet <tcp-server|tcp-client|udp-server|udp-client>"),
+    let Some(mode) = args.next() else {
+        print_usage();
+        return;
+    };
+
+    match mode.as_str() {
+        "tcp-server" => {
+            let address = args.next().unwrap_or_else(|| "127.0.0.1:8000".to_string());
+
+            tcp_server(&address);
+        }
+        "tcp-client" => {
+            let address = args.next().unwrap_or_else(|| "127.0.0.1:8000".to_string());
+
+            tcp_client(&address);
+        }
+        "udp-server" => {
+            let address = args.next().unwrap_or_else(|| "127.0.0.1:8000".to_string());
+
+            udp_server(&address);
+        }
+        "udp-client" => {
+            let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:0".to_string());
+
+            let server_address = args.next().unwrap_or_else(|| "127.0.0.1:8000".to_string());
+
+            udp_client(&bind_address, &server_address);
+        }
+        _ => print_usage(),
     }
+}
+
+fn print_usage() {
+    eprintln!(
+        "Usage:
+  meshlet tcp-server [BIND_ADDRESS]
+  meshlet tcp-client [SERVER_ADDRESS]
+  meshlet udp-server [BIND_ADDRESS] [SERVER_ADDRESS]
+  meshlet udp-client [BIND_ADDRESS] [SERVER_ADDRESS]"
+    );
 }
