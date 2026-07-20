@@ -1,14 +1,25 @@
 use std::env;
 use std::net::TcpListener;
+use std::io::Read;
+
 
 fn tcp_server() {
     let listener = TcpListener::bind("127.0.0.1:8000").expect("failed to bind TCP listener");
 
     println!("local: {}", listener.local_addr().unwrap());
 
-    let (_stream, remote_addr) = listener.accept().expect("failed to accept connection");
+    let (mut stream, remote_addr) = listener.accept().expect("failed to accept connection");
 
     println!("remote: {remote_addr}");
+
+    let mut buffer = [0_u8; 1024];
+
+    let bytes_received = stream
+        .read(&mut buffer)
+        .expect("failed to read from TCP stream");
+
+    println!("bytes received: {bytes_received}");
+    println!("exact bytes: {:?}", &buffer[..bytes_received]);
 }
 
 fn main() {
