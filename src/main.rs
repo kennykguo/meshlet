@@ -135,7 +135,7 @@ fn print_usage() {
         "Usage:
   meshlet tcp-server [BIND_ADDRESS]
   meshlet tcp-client [SERVER_ADDRESS]
-  meshlet udp-server [BIND_ADDRESS] [SERVER_ADDRESS]
-  meshlet udp-client [BIND_ADDRESS] [SERVER_ADDRESS]"
+  meshlet udp-server [BIND_ADDRESS]
+  meshlet udp-client [BIND_ADDRESS] "
     );
 }
