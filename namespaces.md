@@ -37,4 +37,12 @@ sudo ip -n mesh-b link set lo up
 
 sudo ip -n mesh-a route add 192.0.2.0/24 via 10.10.0.1 dev a0
 
-sudo ip -n mesh-b route add 10.10.0.0/24 via 192.0.2.10 dev b0
+
+# NAT
+sudo ip netns exec mesh-r nft add table ip meshlet_nat
+
+sudo ip netns exec mesh-r nft \
+  'add chain ip meshlet_nat postrouting { type nat hook postrouting priority srcnat; policy accept; }'
+
+sudo ip netns exec mesh-r nft \
+  'add rule ip meshlet_nat postrouting oifname "r1" ip saddr 10.10.0.0/24 snat to 192.0.2.10'
