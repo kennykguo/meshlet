@@ -34,10 +34,14 @@ completed:
     private-to-public source nat and reverse translation
     udp round-trip latency measurement
     executable stateful-firewall model
+    live stateful-firewall packet experiment
 
-next:
-    compare the firewall model with one real packet-path experiment
-    then build the coordinator and encrypted-overlay stages
+implemented, awaiting your live observation:
+    udp coordinator registration, endpoint lookup, and lease expiration
+
+after that:
+    demonstrate why coordinator identity needs authentication
+    then build the encrypted-overlay stages
 
 fundamentals-first roadmap
 
@@ -484,6 +488,55 @@ the node must periodically renew it.
 this prevents stale addresses from remaining valid forever.
 
 the coordinator is authoritative for membership metadata but does not have perfect knowledge of reality. heartbeats and leases turn silence into a time-bounded guess. this stage will make that uncertainty explicit with expiration, re-registration, duplicate messages, and an unreachable node.
+
+first coordinator implementation
+
+the first version is an in-memory udp service. it supports two versioned messages:
+
+MESHLET/1 REGISTER NODE_ID LEASE_SECONDS
+MESHLET/1 LOOKUP NODE_ID
+
+`MESHLET/1` is a protocol-version label. a protocol is an agreed message format and behavior. including the version lets a receiver reject message formats it does not understand instead of silently misinterpreting them.
+
+the registry maps:
+
+node id → observed udp source endpoint + expiration deadline
+
+the endpoint is observed from the received udp datagram. it is not accepted from a claimed address inside the request. behind nat, this means the coordinator sees the router's translated source endpoint rather than the node's private endpoint.
+
+the datagram is bounded to 1024 bytes, node ids are bounded and validated, leases are limited to 1–300 seconds, messages have an explicit version, clients use a response timeout, and expiration is tested with a caller-controlled monotonic time. these are transferable production principles; this teaching protocol and implementation are original to Meshlet.
+
+the first version intentionally has no authentication and stores no durable data. anyone who can contact it can claim or replace a node id, and all entries disappear if the coordinator process restarts. we will demonstrate the identity flaw before adding cryptographic authentication.
+
+coordinator modes:
+
+meshlet coordinator-server [BIND_ADDRESS]
+meshlet coordinator-register [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID] [LEASE_SECONDS]
+meshlet coordinator-lookup [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID]
+
+live namespace experiment
+
+rebuild the topology and binary:
+
+bash namespaces.md
+cargo build
+
+start the coordinator on mesh-b:
+
+sudo ip netns exec mesh-b target/debug/meshlet \
+  coordinator-server 192.0.2.20:9000
+
+register mesh-a for 30 seconds:
+
+sudo ip netns exec mesh-a target/debug/meshlet \
+  coordinator-register 10.10.0.2:0 192.0.2.20:9000 mesh-a 30
+
+look it up before the lease expires:
+
+sudo ip netns exec mesh-b target/debug/meshlet \
+  coordinator-lookup 192.0.2.20:0 192.0.2.20:9000 mesh-a
+
+the client knows its private local endpoint, while the coordinator should report a source endpoint translated to the router's `192.0.2.10` address. this is location discovery: the service tells a node how another packet appeared at a shared observation point.
 
 stage 7: authenticated cryptographic handshake
 

@@ -24,6 +24,7 @@ setup_firewall() {
     sudo ip netns exec mesh-r nft delete table inet meshlet_filter
   fi
 
+  # firewall table
   sudo ip netns exec mesh-r nft add table inet meshlet_filter
   sudo ip netns exec mesh-r nft \
     'add chain inet meshlet_filter forward { type filter hook forward priority filter; policy drop; }'

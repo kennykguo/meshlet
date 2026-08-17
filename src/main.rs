@@ -1,3 +1,4 @@
+mod coordinator;
 mod firewall;
 
 use std::env;
@@ -206,7 +207,8 @@ fn firewall_demo() {
     let server = Endpoint::new(Ipv4Addr::new(192, 0, 2, 20), 8_000);
     let outbound = FlowKey::new(TransportProtocol::Udp, client, server);
     let matching_reply = outbound.reverse();
-    let wrong_port_reply = FlowKey::new( // reverse the endpoint
+    let wrong_port_reply = FlowKey::new(
+        // reverse the endpoint
         TransportProtocol::Udp,
         Endpoint::new(Ipv4Addr::new(192, 0, 2, 20), 8_001),
         client,
@@ -316,6 +318,33 @@ fn main() {
             udp_rtt_client(&bind_address, &server_address, samples);
         }
         "firewall-demo" => firewall_demo(),
+        "coordinator-server" => {
+            let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:9000".to_string());
+
+            coordinator::run_server(&bind_address);
+        }
+        "coordinator-register" => {
+            let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:0".to_string());
+            let server_address = args.next().unwrap_or_else(|| "127.0.0.1:9000".to_string());
+            let node_id = args.next().unwrap_or_else(|| "mesh-a".to_string());
+            let lease_seconds = args
+                .next()
+                .map(|value| {
+                    value
+                        .parse()
+                        .expect("LEASE_SECONDS must be a positive integer")
+                })
+                .unwrap_or(30);
+
+            coordinator::register(&bind_address, &server_address, &node_id, lease_seconds);
+        }
+        "coordinator-lookup" => {
+            let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:0".to_string());
+            let server_address = args.next().unwrap_or_else(|| "127.0.0.1:9000".to_string());
+            let node_id = args.next().unwrap_or_else(|| "mesh-a".to_string());
+
+            coordinator::lookup(&bind_address, &server_address, &node_id);
+        }
         _ => print_usage(),
     }
 }
@@ -329,7 +358,10 @@ fn print_usage() {
   meshlet udp-client [BIND_ADDRESS] [SERVER_ADDRESS]
   meshlet udp-bench-server [BIND_ADDRESS]
   meshlet udp-rtt-client [BIND_ADDRESS] [SERVER_ADDRESS] [SAMPLES]
-  meshlet firewall-demo"
+  meshlet firewall-demo
+  meshlet coordinator-server [BIND_ADDRESS]
+  meshlet coordinator-register [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID] [LEASE_SECONDS]
+  meshlet coordinator-lookup [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID]"
     );
 }
 

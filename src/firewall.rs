@@ -3,7 +3,6 @@ use std::fmt;
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
-
 // transport protocol
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TransportProtocol {
@@ -38,7 +37,6 @@ impl fmt::Display for Endpoint {
         write!(formatter, "{}:{}", self.address, self.port)
     }
 }
-
 
 // flow - 5 tuple
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
