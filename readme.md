@@ -13,6 +13,11 @@ this repository exists to teach networking from first principles. every stage sh
 
 linux commands are laboratory equipment, not the subject. we will use namespaces, nftables, and routing commands only when they make a fundamental behavior observable. we will not turn this into a system-administration or deployment-automation project.
 
+learner-run commands should include a linux observation mechanism such as a
+network namespace, tcpdump, ip, nftables, or a tun device. correctness and
+negative cases belong in automated code tests run during implementation, not
+in separate learner commands whose only purpose is to prove or disprove a case.
+
 we will also keep three boundaries explicit:
 
 concept:
@@ -40,9 +45,10 @@ completed:
 
 implemented, awaiting your live observation:
     coordinator endpoint lookup and lease expiration
+    authenticated peer handshake and encrypted echo
 
 after that:
-    build the encrypted peer handshake and data-plane stages
+    direct connectivity probing and relay fallback
 
 fundamentals-first roadmap
 
@@ -53,7 +59,7 @@ stage	fundamental	implementation evidence
 4	stateful firewall semantics	one outbound flow, its reply, and one rejected inbound flow
 5	stable public rendezvous	dns name and fixed simulated endpoint
 6	control plane, membership, leases, and failure uncertainty	coordinator registration and expiry
-7	identity, key agreement, derivation, and authenticated encryption	handshake, tamper, and replay tests
+7	identity, key agreement, derivation, and authenticated encryption	authenticated handshake trace and encrypted echo
 8	direct connectivity and relay fallback	probe state machine plus direct/relay traces
 9	tun layer-3 overlay	one ordinary ip packet transported through userspace
 10	subnets, route advertisement, and longest-prefix matching	authorized prefix routed through a peer
@@ -676,17 +682,17 @@ ephemeral exchange key:
     x25519
     used to derive a temporary shared secret
 
-the handshake will work approximately like this:
+the implemented handshake uses two packets, so it takes one network round trip:
 
 node a → node b:
 
 client hello
-    node a identity public key
     node a ephemeral public key
-random nonce
-signature over the message
+    signature over the protocol version, both node ids, and that public key
 
-a nonce is a value intended to be used once. including nonces and the transcript prevents an old valid message from being accepted as a fresh handshake. accepting an old message again is called a replay attack.
+the identity public key is not sent as self-asserted truth. node b loads the
+public key already authorized for node a and uses that key to verify the
+signature.
 
 node b performs:
 
@@ -701,10 +707,11 @@ node b performs:
 then node b returns:
 
 server hello
-    node b identity public key
     node b ephemeral public key
-    both nonces
-    signature over the full handshake transcript
+    signature over both node ids and both ephemeral public keys
+
+node a verifies that signature using the public identity key it already trusts
+for node b. each ephemeral key pair is freshly generated for one handshake.
 
 both sides compute:
 
@@ -724,7 +731,7 @@ hkdf
 a-to-b encryption key
 b-to-a encryption key
 
-packets will then use chacha20-poly1305.
+data packets now use chacha20-poly1305.
 
 chacha20-poly1305 is an aead: authenticated encryption with associated data. the encrypted payload is confidential, while selected unencrypted headers can still be covered by integrity protection.
 
@@ -741,7 +748,92 @@ authentication:
 
 discarding the ephemeral private keys after the handshake provides forward secrecy: later theft of the long-term identity key should not reveal previously recorded session traffic.
 
-we will use audited library implementations, explicit byte encodings, test vectors, and tamper/replay tests. production systems do not copy cryptographic primitives into application code.
+the implementation derives two 32-byte directional keys:
+
+client to server key
+server to client key
+
+directional means each traffic direction receives a different key. therefore,
+both directions may start their packet number at zero without reusing a nonce
+with the same key.
+
+each encrypted UDP datagram contains:
+
+visible header
+    meshlet packet marker
+    direction
+    packet number
+
+encrypted body
+    application bytes
+    authentication tag
+
+ciphertext means the unreadable encrypted form of the application bytes. the
+16-byte authentication tag is a compact check produced by the cipher; the
+receiver rejects the packet if the key, header, or ciphertext does not match it.
+
+a nonce is a value that must be unique for every packet encrypted with one
+key. meshlet constructs it from the direction and packet number. it is not a
+secret. the packet number starts at zero and increases. the receiver expects
+the next number, so the same datagram cannot be accepted twice.
+
+the visible header is associated data: it is not hidden, but it is included in
+the authentication calculation. changing either the header or ciphertext makes
+the packet invalid.
+
+the client sends one encrypted message and the server returns its decrypted
+bytes through the opposite directional key. successfully decrypting those
+packets confirms that both peers derived the same keys. the keys disappear when
+the two learning processes exit.
+
+live encrypted-echo experiment
+
+start the one-exchange server inside mesh-b's network namespace:
+
+sudo ip netns exec mesh-b target/release/meshlet \
+  secure-echo-server \
+  192.0.2.20:7000 \
+  .meshlet/keys/mesh-b.identity \
+  .meshlet/keys/authorized-nodes
+
+observe the whole exchange on every mesh-r interface:
+
+sudo ip netns exec mesh-r \
+  tcpdump -nni any -X 'udp port 7000'
+
+run the client inside mesh-a's network namespace:
+
+sudo ip netns exec mesh-a target/release/meshlet \
+  secure-echo-client \
+  10.10.0.2:0 \
+  192.0.2.20:7000 \
+  .meshlet/keys/mesh-a.identity \
+  mesh-b \
+  .meshlet/keys/mesh-b.authorization
+
+there are four UDP datagrams: client hello, server hello, encrypted request,
+and encrypted echo. because `-i any` watches both router interfaces, it normally
+shows each datagram once entering and once leaving: eight capture lines. the
+hello fields remain visible. the last two datagrams expose only the 13-byte
+header (`MSH3`, direction, and packet number) followed by ciphertext and a
+16-byte authentication tag. `hello from encrypted meshlet` appears only in the
+processes' decrypted output, not in those captured datagrams.
+
+the client reports handshake time separately from encrypted-echo round-trip
+time. the server separately reports handshake cryptography and data-packet
+cryptography. each number is one observation, not a stable benchmark.
+
+on a real wide-area path, the network round trip will usually dominate this
+setup cost. after the handshake, key agreement and identity signatures are
+not repeated for every data packet; the cheaper symmetric packet cipher will
+operate on the data path.
+
+this is deliberately a one-exchange learning server. retries, concurrent
+clients, out-of-order delivery, key rotation, and session resumption are omitted
+until an experiment gives us a concrete reason to introduce them.
+
+we use established library implementations and explicit byte encodings.
+production systems do not copy cryptographic primitives into application code.
 
 stage 8: direct connectivity and relay fallback
 

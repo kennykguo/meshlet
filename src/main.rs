@@ -1,6 +1,8 @@
 mod coordinator;
 mod firewall;
+mod handshake;
 mod identity;
+mod secure_packet;
 
 use std::env;
 use std::io::{Read, Write};
@@ -397,6 +399,36 @@ fn main() {
 
             coordinator::lookup_authenticated(&bind_address, &server_address, &node_id);
         }
+        "secure-echo-server" => {
+            let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:7000".to_string());
+            let identity_path = args
+                .next()
+                .unwrap_or_else(|| ".meshlet/keys/mesh-b.identity".to_string());
+            let authorization_path = args
+                .next()
+                .unwrap_or_else(|| ".meshlet/keys/authorized-nodes".to_string());
+
+            handshake::run_secure_echo_server(&bind_address, &identity_path, &authorization_path);
+        }
+        "secure-echo-client" => {
+            let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:0".to_string());
+            let server_address = args.next().unwrap_or_else(|| "127.0.0.1:7000".to_string());
+            let identity_path = args
+                .next()
+                .unwrap_or_else(|| ".meshlet/keys/mesh-a.identity".to_string());
+            let peer_node_id = args.next().unwrap_or_else(|| "mesh-b".to_string());
+            let authorization_path = args
+                .next()
+                .unwrap_or_else(|| ".meshlet/keys/mesh-b.authorization".to_string());
+
+            handshake::run_secure_echo_client(
+                &bind_address,
+                &server_address,
+                &identity_path,
+                &peer_node_id,
+                &authorization_path,
+            );
+        }
         _ => print_usage(),
     }
 }
@@ -417,7 +449,9 @@ fn print_usage() {
   meshlet coordinator-lookup [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID]
   meshlet coordinator-server-auth [BIND_ADDRESS] [AUTHORIZATION_PATH]
   meshlet coordinator-register-auth [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID] [LEASE_SECONDS] [IDENTITY_PATH]
-  meshlet coordinator-lookup-auth [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID]"
+  meshlet coordinator-lookup-auth [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID]
+  meshlet secure-echo-server [BIND_ADDRESS] [IDENTITY_PATH] [AUTHORIZATION_PATH]
+  meshlet secure-echo-client [BIND_ADDRESS] [SERVER_ADDRESS] [IDENTITY_PATH] [PEER_NODE_ID] [AUTHORIZATION_PATH]"
     );
 }
 
