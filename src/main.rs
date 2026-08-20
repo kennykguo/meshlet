@@ -1,5 +1,6 @@
 mod coordinator;
 mod firewall;
+mod identity;
 
 use std::env;
 use std::io::{Read, Write};
@@ -318,6 +319,18 @@ fn main() {
             udp_rtt_client(&bind_address, &server_address, samples);
         }
         "firewall-demo" => firewall_demo(),
+        "identity-generate" => {
+            let node_id = args.next().unwrap_or_else(|| "mesh-a".to_string());
+            let private_path = args
+                .next()
+                .unwrap_or_else(|| format!(".meshlet/keys/{node_id}.identity"));
+            let public_path = args
+                .next()
+                .unwrap_or_else(|| format!(".meshlet/keys/{node_id}.authorization"));
+
+            identity::generate(&node_id, &private_path, &public_path)
+                .unwrap_or_else(|error| panic!("failed to generate identity: {error}"));
+        }
         "coordinator-server" => {
             let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:9000".to_string());
 
@@ -345,6 +358,45 @@ fn main() {
 
             coordinator::lookup(&bind_address, &server_address, &node_id);
         }
+        "coordinator-server-auth" => {
+            let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:9000".to_string());
+            let authorization_path = args
+                .next()
+                .unwrap_or_else(|| ".meshlet/keys/authorized-nodes".to_string());
+
+            coordinator::run_authenticated_server(&bind_address, &authorization_path);
+        }
+        "coordinator-register-auth" => {
+            let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:0".to_string());
+            let server_address = args.next().unwrap_or_else(|| "127.0.0.1:9000".to_string());
+            let node_id = args.next().unwrap_or_else(|| "mesh-a".to_string());
+            let lease_seconds = args
+                .next()
+                .map(|value| {
+                    value
+                        .parse()
+                        .expect("LEASE_SECONDS must be a positive integer")
+                })
+                .unwrap_or(30);
+            let identity_path = args
+                .next()
+                .unwrap_or_else(|| format!(".meshlet/keys/{node_id}.identity"));
+
+            coordinator::register_authenticated(
+                &bind_address,
+                &server_address,
+                &node_id,
+                lease_seconds,
+                &identity_path,
+            );
+        }
+        "coordinator-lookup-auth" => {
+            let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:0".to_string());
+            let server_address = args.next().unwrap_or_else(|| "127.0.0.1:9000".to_string());
+            let node_id = args.next().unwrap_or_else(|| "mesh-a".to_string());
+
+            coordinator::lookup_authenticated(&bind_address, &server_address, &node_id);
+        }
         _ => print_usage(),
     }
 }
@@ -359,9 +411,13 @@ fn print_usage() {
   meshlet udp-bench-server [BIND_ADDRESS]
   meshlet udp-rtt-client [BIND_ADDRESS] [SERVER_ADDRESS] [SAMPLES]
   meshlet firewall-demo
+  meshlet identity-generate [NODE_ID] [PRIVATE_PATH] [AUTHORIZATION_PATH]
   meshlet coordinator-server [BIND_ADDRESS]
   meshlet coordinator-register [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID] [LEASE_SECONDS]
-  meshlet coordinator-lookup [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID]"
+  meshlet coordinator-lookup [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID]
+  meshlet coordinator-server-auth [BIND_ADDRESS] [AUTHORIZATION_PATH]
+  meshlet coordinator-register-auth [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID] [LEASE_SECONDS] [IDENTITY_PATH]
+  meshlet coordinator-lookup-auth [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID]"
     );
 }
 

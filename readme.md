@@ -35,13 +35,14 @@ completed:
     udp round-trip latency measurement
     executable stateful-firewall model
     live stateful-firewall packet experiment
+    live coordinator registration through nat
+    authenticated coordinator registration and wrong-key rejection
 
 implemented, awaiting your live observation:
-    udp coordinator registration, endpoint lookup, and lease expiration
+    coordinator endpoint lookup and lease expiration
 
 after that:
-    demonstrate why coordinator identity needs authentication
-    then build the encrypted-overlay stages
+    build the encrypted peer handshake and data-plane stages
 
 fundamentals-first roadmap
 
@@ -521,22 +522,131 @@ rebuild the topology and binary:
 bash namespaces.md
 cargo build
 
-start the coordinator on mesh-b:
+the current lab uses four simulated machines. `mesh-a` and `mesh-b` are peers,
+`mesh-r` is their router, and `mesh-c` is the coordinator. a simulated machine
+is a network namespace: a separate network stack inside the same linux kernel.
+the coordinator is a process running inside `mesh-c`; in a real deployment it
+would normally run on a separate host, vm, or container.
 
-sudo ip netns exec mesh-b target/debug/meshlet \
-  coordinator-server 192.0.2.20:9000
+start the coordinator on mesh-c:
+
+sudo ip netns exec mesh-c target/debug/meshlet \
+  coordinator-server 203.0.113.10:9000
 
 register mesh-a for 30 seconds:
 
 sudo ip netns exec mesh-a target/debug/meshlet \
-  coordinator-register 10.10.0.2:0 192.0.2.20:9000 mesh-a 30
+  coordinator-register 10.10.0.2:0 203.0.113.10:9000 mesh-a 30
 
 look it up before the lease expires:
 
 sudo ip netns exec mesh-b target/debug/meshlet \
-  coordinator-lookup 192.0.2.20:0 192.0.2.20:9000 mesh-a
+  coordinator-lookup 192.0.2.20:0 203.0.113.10:9000 mesh-a
 
-the client knows its private local endpoint, while the coordinator should report a source endpoint translated to the router's `192.0.2.10` address. this is location discovery: the service tells a node how another packet appeared at a shared observation point.
+the client knows its private local endpoint, while the coordinator should report
+a source endpoint translated to the router's `203.0.113.1` address. this is
+location discovery: the service tells a node how another packet appeared at a
+shared observation point.
+
+authenticated coordinator registration
+
+the two keys have different capabilities:
+
+private key:
+    secret bytes held by the node. they can create signatures. possession of
+    these bytes is what lets a process act as that node.
+
+public key:
+    non-secret bytes copied to the coordinator. they can verify signatures but
+    cannot feasibly create one or recover the private key.
+
+a signature is a fixed-size mathematical proof tied to the exact message bytes
+and a private key. verification is the yes/no calculation performed with the
+corresponding public key. this provides authentication and tamper detection; it
+does not encrypt the message or hide it.
+
+the coordinator's authorization file is the initial trust decision:
+
+mesh-a -> mesh-a's public key
+
+the mathematics proves that a signature matches that key. the file tells the
+coordinator which key is allowed to act as `mesh-a`. safely adding that mapping
+is called enrollment.
+
+version 2 adds a challenge-response exchange. a challenge is a fresh random
+value chosen by the verifier. it is public, not a password. its purpose is to
+make this registration different from every earlier registration:
+
+1. node asks for a challenge using its node id
+2. coordinator generates an unpredictable 32-byte challenge and binds it to that node id plus the observed udp source endpoint for 10 seconds
+3. node signs a canonical registration message containing the node id, requested lease, and challenge
+4. coordinator finds the pre-authorized public key for that node id and strictly verifies the ed25519 signature
+5. coordinator consumes the challenge and records the observed endpoint only after verification succeeds
+
+the word nonce means a value intended for one use. replay means sending an old,
+previously valid message again. consuming the nonce prevents replay. binding it
+to the observed source prevents its use from a different endpoint. signing the
+lease prevents someone from changing a signed 30-second lease into 300 seconds.
+
+any caller may receive a challenge. that is safe: only the owner of the
+authorized private key can produce the required answer. the observed impostor
+experiment reached the coordinator and received a challenge, but its different
+private key produced a signature that did not match the authorized public key,
+so verification failed.
+
+the learning keys live under `.meshlet/keys` so every file is visible inside the
+project. `.meshlet` is excluded by `.gitignore`: private keys must not enter git
+history. the private identity file uses unix mode 0600, meaning only its owner
+may read or write it. the directory uses mode 0700, meaning only its owner may
+list or enter it. public authorization files are non-secret. key generation
+refuses to overwrite either output.
+
+create the private project directory and generate a node identity:
+
+mkdir -p -m 700 .meshlet/keys
+target/debug/meshlet identity-generate mesh-a \
+  .meshlet/keys/mesh-a.identity \
+  .meshlet/keys/authorized-nodes
+
+start the authenticated coordinator:
+
+sudo ip netns exec mesh-c target/debug/meshlet \
+  coordinator-server-auth 203.0.113.10:9000 \
+  .meshlet/keys/authorized-nodes
+
+register using the private identity:
+
+sudo ip netns exec mesh-a target/debug/meshlet \
+  coordinator-register-auth \
+  10.10.0.2:0 203.0.113.10:9000 mesh-a 120 \
+  .meshlet/keys/mesh-a.identity
+
+look up the authenticated registration:
+
+sudo ip netns exec mesh-b target/debug/meshlet \
+  coordinator-lookup-auth \
+  192.0.2.20:0 203.0.113.10:9000 mesh-a
+
+this proves control of the private signing key authorized for `mesh-a`, recent round-trip access to the observed endpoint, and agreement on the signed registration fields. it does not prove that the node is uncompromised, that another peer can reach it, or that it remains alive for the entire lease.
+
+the current protocol authenticates the registering node only. it does not
+authenticate the coordinator to the node, encrypt control messages, authorize
+lookup callers, limit request rates, persist state, rotate keys, or revoke a
+stolen key. those omissions are visible boundaries of the learning stage, not
+production security claims.
+
+production security extension
+
+the project-local key directory is a deliberate learning compromise: visible,
+inspectable, and protected from accidental git commits. a production system
+would normally store private keys in a restricted operating-system secret
+store, or use a tpm or hsm: hardware designed to perform cryptographic
+operations without releasing the private key bytes. a hosted service may use a
+kms, meaning a managed key-management service. production also needs protected
+enrollment, key rotation (replacing keys), revocation (declaring a key no longer
+trusted), encrypted backups, access auditing, and a protected channel to the
+coordinator. public keys may be distributed widely; private keys must never be
+logged or copied into source control.
 
 stage 7: authenticated cryptographic handshake
 
@@ -959,3 +1069,23 @@ meshlet will begin as a socket and linux-routing lab, then grow into an authenti
 project purpose
 
 the project’s purpose is to make internet routing, transport ports, public and private addressing, nat, stateful firewalls, containers, cryptographic handshakes, distributed membership, overlay networks, relay fallback, tun interfaces, subnet routing, packet inspection, and latency tradeoffs observable through code and packet traces rather than only through diagrams.
+
+golang learning track
+
+go fits this project best at a service boundary, especially a later coordinator implementation. coordinators perform request parsing, concurrent network io, timers, maps, serialization, and operational diagnostics: areas where go's small language, garbage collection, goroutines, channels, networking standard library, fast builds, and simple binary deployment are strong.
+
+meshlet's packet data path will remain in rust so the project can study explicit ownership, byte representations, cryptographic state, system calls, tun io, and latency without introducing a garbage-collected runtime into the hottest path.
+
+after the coordinator protocol and authentication rules are stable, implement the same coordinator contract in go and run the rust nodes against both servers. this creates a meaningful language boundary and proves that the protocol, rather than one implementation, is the contract.
+
+the go learning sequence will start from zero:
+
+1. source files, packages, modules, compilation, and the `main` entry point
+2. values, variables, constants, functions, structs, methods, pointers, slices, and maps
+3. interfaces, explicit error values, `defer`, resource lifetime, and cancellation with contexts
+4. goroutines, channels, locks, races, and ownership conventions
+5. udp/http servers, deadlines, bounded inputs, serialization, and tests
+6. garbage collection, allocation, escape analysis, latency, the race detector, benchmarks, and pprof
+7. implement the Meshlet coordinator protocol and compare behavior, failure handling, and performance with the rust version
+
+we will not mix go into the repository merely for syntax practice. the second coordinator becomes worthwhile when interoperability and control-plane concurrency are real learning goals.
