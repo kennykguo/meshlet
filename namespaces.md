@@ -34,6 +34,7 @@ sudo ip -n mesh-r address add 192.0.2.10/24 dev r1
 sudo ip -n mesh-b address add 192.0.2.20/24 dev b0
 sudo ip -n mesh-r address add 203.0.113.1/24 dev r2
 sudo ip -n mesh-c address add 203.0.113.10/24 dev c0
+sudo ip -n mesh-c address add 203.0.113.20/24 dev c0
 
 
 # "up" enables an interface. "lo" is the machine's loopback interface.

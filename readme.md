@@ -42,13 +42,14 @@ completed:
     live stateful-firewall packet experiment
     live coordinator registration through nat
     authenticated coordinator registration and wrong-key rejection
+    authenticated peer handshake and encrypted echo
 
 implemented, awaiting your live observation:
     coordinator endpoint lookup and lease expiration
-    authenticated peer handshake and encrypted echo
+    one-session opaque udp relay carrying the encrypted exchange
 
 after that:
-    direct connectivity probing and relay fallback
+    automatic direct-path probing and relay fallback selection
 
 fundamentals-first roadmap
 
@@ -839,7 +840,90 @@ stage 8: direct connectivity and relay fallback
 
 connectivity means that packets sent to an endpoint can actually reach the intended node and that replies can return. knowing an ip address is not enough when nat mappings, firewalls, or changing ports affect the path.
 
-nodes first exchange observed udp endpoints through the coordinator.
+we will build this in two small steps. first, run the same secure echo directly
+and through a relay so the two data paths are visible. second, add automatic
+probing and path selection. this keeps forwarding separate from the later
+decision about which path to use.
+
+the first relay is deliberately a one-client, one-exchange udp process:
+
+client endpoint ← relay socket → configured server endpoint
+
+an endpoint is an ip address plus a udp port. the relay learns the client's
+endpoint from the source of the first datagram. it already knows the server's
+endpoint from its command line. it then copies each received datagram to the
+other endpoint without parsing or changing its payload.
+
+opaque means the relay treats the payload as an uninterpreted sequence of
+bytes. the end nodes still perform the handshake, authenticate node identities,
+derive session keys, and encrypt the request. the relay has none of those keys.
+
+this relay is not an ip router. the kernel router forwards an ip packet by
+looking up that packet's destination address. the relay is a userspace program:
+it receives one udp datagram addressed to its own socket, then sends a new udp
+datagram containing the same payload toward the other endpoint.
+
+live relayed encrypted-echo experiment
+
+if the namespaces were created before the relay address was added to
+`namespaces.md`, add that address to mesh-c's existing interface:
+
+sudo ip -n mesh-c address replace 203.0.113.20/24 dev c0
+
+start the existing encrypted server in mesh-b:
+
+sudo ip netns exec mesh-b target/release/meshlet \
+  secure-echo-server \
+  192.0.2.20:7000 \
+  .meshlet/keys/mesh-b.identity \
+  .meshlet/keys/authorized-nodes
+
+start the relay at a second address in mesh-c. its configured upstream is the
+encrypted server:
+
+sudo ip netns exec mesh-c target/release/meshlet \
+  udp-relay \
+  203.0.113.20:7100 \
+  192.0.2.20:7000
+
+observe both udp legs on every router interface:
+
+sudo ip netns exec mesh-r \
+  tcpdump -nni any -X '(udp port 7000 or udp port 7100)'
+
+run the same secure client, changing only its destination from the direct
+server endpoint to the relay endpoint:
+
+sudo ip netns exec mesh-a target/release/meshlet \
+  secure-echo-client \
+  10.10.0.2:0 \
+  203.0.113.20:7100 \
+  .meshlet/keys/mesh-a.identity \
+  mesh-b \
+  .meshlet/keys/mesh-b.authorization
+
+the secure exchange still has four logical messages: client hello, server
+hello, encrypted request, and encrypted echo. each message now travels in two
+udp datagrams: endpoint to relay, then relay to the other endpoint. that makes
+eight network datagrams. `tcpdump -i any` normally observes each once entering
+and once leaving mesh-r, producing about sixteen capture records.
+
+mesh-b will report the relay socket as its network peer, but it will still
+report `mesh-a` as the authenticated node. this distinction is fundamental:
+an endpoint says where the current packet came from; cryptographic identity
+says which key signed the handshake.
+
+the relay adds a userspace receive, a userspace send, another routed leg, and
+more opportunities to wait in queues or for process scheduling. compare its
+round-trip time with the earlier direct observation, but treat each single run
+as an example rather than a benchmark.
+
+this first relay intentionally omits multiple clients, long-lived sessions,
+registration, authentication at the relay, retries, and rate limits. none is
+needed to observe the fundamental forwarding path.
+
+the automatic-selection step will work as follows. nodes first exchange
+observed udp endpoints through the coordinator.
 
 they send small probes toward one another:
 
@@ -850,11 +934,12 @@ these outbound probes create nat state.
 
 when this succeeds, encrypted packets travel directly.
 
-when it fails, both nodes maintain outbound connections to the relay:
+when it fails, both nodes maintain outbound paths to a multi-node relay:
 
 node a → relay ← node b
 
-the relay receives a frame like:
+unlike the one-client relay above, that relay will need a small visible routing
+envelope such as:
 
 destination node id
 encrypted payload

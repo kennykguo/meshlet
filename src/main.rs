@@ -2,6 +2,7 @@ mod coordinator;
 mod firewall;
 mod handshake;
 mod identity;
+mod relay;
 mod secure_packet;
 
 use std::env;
@@ -429,6 +430,12 @@ fn main() {
                 &authorization_path,
             );
         }
+        "udp-relay" => {
+            let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:7100".to_string());
+            let upstream_address = args.next().unwrap_or_else(|| "127.0.0.1:7000".to_string());
+
+            relay::run(&bind_address, &upstream_address);
+        }
         _ => print_usage(),
     }
 }
@@ -451,7 +458,8 @@ fn print_usage() {
   meshlet coordinator-register-auth [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID] [LEASE_SECONDS] [IDENTITY_PATH]
   meshlet coordinator-lookup-auth [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID]
   meshlet secure-echo-server [BIND_ADDRESS] [IDENTITY_PATH] [AUTHORIZATION_PATH]
-  meshlet secure-echo-client [BIND_ADDRESS] [SERVER_ADDRESS] [IDENTITY_PATH] [PEER_NODE_ID] [AUTHORIZATION_PATH]"
+  meshlet secure-echo-client [BIND_ADDRESS] [SERVER_ADDRESS] [IDENTITY_PATH] [PEER_NODE_ID] [AUTHORIZATION_PATH]
+  meshlet udp-relay [BIND_ADDRESS] [UPSTREAM_ADDRESS]"
     );
 }
 
