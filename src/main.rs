@@ -430,6 +430,27 @@ fn main() {
                 &authorization_path,
             );
         }
+        "secure-echo-client-auto" => {
+            let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:0".to_string());
+            let direct_address = args.next().unwrap_or_else(|| "127.0.0.1:7000".to_string());
+            let relay_address = args.next().unwrap_or_else(|| "127.0.0.1:7100".to_string());
+            let identity_path = args
+                .next()
+                .unwrap_or_else(|| ".meshlet/keys/mesh-a.identity".to_string());
+            let peer_node_id = args.next().unwrap_or_else(|| "mesh-b".to_string());
+            let authorization_path = args
+                .next()
+                .unwrap_or_else(|| ".meshlet/keys/mesh-b.authorization".to_string());
+
+            handshake::run_secure_echo_client_auto(
+                &bind_address,
+                &direct_address,
+                &relay_address,
+                &identity_path,
+                &peer_node_id,
+                &authorization_path,
+            );
+        }
         "udp-relay" => {
             let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:7100".to_string());
             let upstream_address = args.next().unwrap_or_else(|| "127.0.0.1:7000".to_string());
@@ -459,6 +480,7 @@ fn print_usage() {
   meshlet coordinator-lookup-auth [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID]
   meshlet secure-echo-server [BIND_ADDRESS] [IDENTITY_PATH] [AUTHORIZATION_PATH]
   meshlet secure-echo-client [BIND_ADDRESS] [SERVER_ADDRESS] [IDENTITY_PATH] [PEER_NODE_ID] [AUTHORIZATION_PATH]
+  meshlet secure-echo-client-auto [BIND_ADDRESS] [DIRECT_ADDRESS] [RELAY_ADDRESS] [IDENTITY_PATH] [PEER_NODE_ID] [AUTHORIZATION_PATH]
   meshlet udp-relay [BIND_ADDRESS] [UPSTREAM_ADDRESS]"
     );
 }

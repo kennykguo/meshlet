@@ -43,13 +43,14 @@ completed:
     live coordinator registration through nat
     authenticated coordinator registration and wrong-key rejection
     authenticated peer handshake and encrypted echo
+    one-session opaque udp relay carrying the encrypted exchange
+    automatic direct-first path selection with relay fallback
 
 implemented, awaiting your live observation:
     coordinator endpoint lookup and lease expiration
-    one-session opaque udp relay carrying the encrypted exchange
 
 after that:
-    automatic direct-path probing and relay fallback selection
+    tun-based layer-3 packet transport
 
 fundamentals-first roadmap
 
@@ -967,6 +968,14 @@ recovery:
     keep testing whether a lower-latency direct path becomes available
 
 the relay adds another network hop and more queueing opportunity, so we will measure direct and relayed rtt separately. it must learn only the routing envelope needed to forward ciphertext, not the decrypted payload.
+
+`secure-echo-client-auto` implements the first three decisions with the existing
+authenticated handshake. it waits up to 250 milliseconds for a valid direct
+server hello. a network error or timeout permits a relay attempt. a malformed
+or incorrectly signed response stops the operation instead of being treated as
+a reachability problem. once one path completes the handshake, the client uses
+that session for encrypted data rather than performing a separate probe round
+trip.
 stage 9: overlay addresses and tun interfaces
 
 initially, meshlet will send application messages.

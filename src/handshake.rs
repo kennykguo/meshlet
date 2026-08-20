@@ -22,6 +22,7 @@ const SIGNATURE_BYTES: usize = 64;
 const SESSION_KEY_BYTES: usize = 32;
 const MAX_DATAGRAM_BYTES: usize = 1_024;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
+const DIRECT_PATH_TIMEOUT: Duration = Duration::from_millis(250);
 const LEARNING_MESSAGE: &[u8] = b"hello from encrypted meshlet\n";
 
 struct ClientHello {
@@ -43,6 +44,33 @@ struct ServerHello {
 struct SessionKeys {
     client_to_server: [u8; SESSION_KEY_BYTES],
     server_to_client: [u8; SESSION_KEY_BYTES],
+}
+
+struct ClientSession {
+    socket: UdpSocket,
+    authenticated_peer: String,
+    transcript: Vec<u8>,
+    keys: SessionKeys,
+    handshake_elapsed: Duration,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum ClientAttemptError {
+    Local(String),
+    Unreachable(String),
+    Rejected(String),
+}
+
+impl ClientAttemptError {
+    fn message(&self) -> &str {
+        match self {
+            Self::Local(message) | Self::Unreachable(message) | Self::Rejected(message) => message,
+        }
+    }
+
+    fn permits_fallback(&self) -> bool {
+        matches!(self, Self::Unreachable(_))
+    }
 }
 
 pub fn run_secure_echo_server(bind_address: &str, identity_path: &str, authorization_path: &str) {
@@ -150,25 +178,104 @@ pub fn run_secure_echo_client(
     peer_node_id: &str,
     authorization_path: &str,
 ) {
+    let (identity, authorizations) = load_client_material(identity_path, authorization_path);
+    require_authorized(&authorizations, peer_node_id);
+    let session = establish_client_session(
+        bind_address,
+        server_address,
+        &identity,
+        &authorizations,
+        peer_node_id,
+        RESPONSE_TIMEOUT,
+    )
+    .unwrap_or_else(|error| panic!("secure handshake failed: {}", error.message()));
+
+    complete_client_exchange(session, identity.node_id(), peer_node_id);
+}
+
+pub fn run_secure_echo_client_auto(
+    bind_address: &str,
+    direct_address: &str,
+    relay_address: &str,
+    identity_path: &str,
+    peer_node_id: &str,
+    authorization_path: &str,
+) {
+    let (identity, authorizations) = load_client_material(identity_path, authorization_path);
+    require_authorized(&authorizations, peer_node_id);
+
+    println!("path policy: try direct, then relay after a reachability failure");
+    println!("direct candidate: {direct_address}");
+    let selection_start = Instant::now();
+    let direct = establish_client_session(
+        bind_address,
+        direct_address,
+        &identity,
+        &authorizations,
+        peer_node_id,
+        DIRECT_PATH_TIMEOUT,
+    );
+
+    let (selected_path, session) = match direct {
+        Ok(session) => ("direct", session),
+        Err(error) if error.permits_fallback() => {
+            println!("direct candidate unavailable: {}", error.message());
+            println!("relay candidate: {relay_address}");
+            let session = establish_client_session(
+                bind_address,
+                relay_address,
+                &identity,
+                &authorizations,
+                peer_node_id,
+                RESPONSE_TIMEOUT,
+            )
+            .unwrap_or_else(|relay_error| {
+                panic!("relay handshake failed: {}", relay_error.message())
+            });
+            ("relay", session)
+        }
+        Err(error) => panic!(
+            "direct candidate failed without trying the relay: {}",
+            error.message()
+        ),
+    };
+
+    println!("selected path: {selected_path}");
+    println!(
+        "path selection and handshake: {:.3} us",
+        selection_start.elapsed().as_secs_f64() * 1_000_000.0
+    );
+    complete_client_exchange(session, identity.node_id(), peer_node_id);
+}
+
+fn load_client_material(
+    identity_path: &str,
+    authorization_path: &str,
+) -> (identity::Identity, Authorizations) {
     let identity = identity::load_identity(identity_path)
         .unwrap_or_else(|error| panic!("failed to load client identity: {error}"));
     let authorizations = Authorizations::load(authorization_path)
         .unwrap_or_else(|error| panic!("failed to load peer authorizations: {error}"));
-    require_authorized(&authorizations, peer_node_id);
+    (identity, authorizations)
+}
 
-    let socket =
-        UdpSocket::bind(bind_address).expect("failed to bind peer handshake client socket");
-    socket
-        .connect(server_address)
-        .expect("failed to select peer handshake server");
-    socket
-        .set_read_timeout(Some(RESPONSE_TIMEOUT))
-        .expect("failed to set peer handshake timeout");
-
-    println!("local: {}", socket.local_addr().unwrap());
-    println!("peer: {}", socket.peer_addr().unwrap());
-    println!("local node: {}", identity.node_id());
-    println!("expected peer node: {peer_node_id}");
+fn establish_client_session(
+    bind_address: &str,
+    peer_address: &str,
+    identity: &identity::Identity,
+    authorizations: &Authorizations,
+    peer_node_id: &str,
+    timeout: Duration,
+) -> Result<ClientSession, ClientAttemptError> {
+    let socket = UdpSocket::bind(bind_address).map_err(|error| {
+        ClientAttemptError::Local(format!("failed to bind client socket: {error}"))
+    })?;
+    socket.connect(peer_address).map_err(|error| {
+        ClientAttemptError::Unreachable(format!("failed to select {peer_address}: {error}"))
+    })?;
+    socket.set_read_timeout(Some(timeout)).map_err(|error| {
+        ClientAttemptError::Local(format!("failed to set handshake timeout: {error}"))
+    })?;
 
     let handshake_start = Instant::now();
     let client_exchange_secret = EphemeralSecret::random();
@@ -186,31 +293,70 @@ pub fn run_secure_echo_client(
     };
     socket
         .send(encode_client_hello(&client).as_bytes())
-        .expect("failed to send client hello");
+        .map_err(|error| {
+            ClientAttemptError::Unreachable(format!("failed to send client hello: {error}"))
+        })?;
 
-    let message = receive_connected(&socket, "server hello");
+    let message = try_receive_connected(&socket, "server hello").map_err(|error| {
+        ClientAttemptError::Unreachable(format!(
+            "no server hello from {peer_address} within {} ms: {error}",
+            timeout.as_millis()
+        ))
+    })?;
     let server = parse_server_hello(&message)
-        .unwrap_or_else(|error| panic!("invalid server hello: {error}"));
-    validate_server_hello(&server, &client)
-        .unwrap_or_else(|error| panic!("server hello does not match this handshake: {error}"));
+        .map_err(|error| ClientAttemptError::Rejected(format!("invalid server hello: {error}")))?;
+    validate_server_hello(&server, &client).map_err(|error| {
+        ClientAttemptError::Rejected(format!(
+            "server hello does not match this handshake: {error}"
+        ))
+    })?;
     verify_signature(
-        &authorizations,
+        authorizations,
         &server.responder_id,
         &server_signing_message(&client, &server.server_exchange_public),
         &server.signature,
     )
-    .unwrap_or_else(|error| panic!("server authentication failed: {error}"));
+    .map_err(|error| {
+        ClientAttemptError::Rejected(format!("server authentication failed: {error}"))
+    })?;
 
     let server_exchange_public = PublicKey::from(server.server_exchange_public);
     let shared_secret = client_exchange_secret.diffie_hellman(&server_exchange_public);
     let transcript = handshake_transcript(&client, &server);
-    let keys = derive_session_keys(&shared_secret, &transcript)
-        .unwrap_or_else(|error| panic!("failed to derive session keys: {error}"));
+    let keys = derive_session_keys(&shared_secret, &transcript).map_err(|error| {
+        ClientAttemptError::Rejected(format!("failed to derive session keys: {error}"))
+    })?;
     let handshake_elapsed = handshake_start.elapsed();
 
+    Ok(ClientSession {
+        socket,
+        authenticated_peer: server.responder_id,
+        transcript,
+        keys,
+        handshake_elapsed,
+    })
+}
+
+fn complete_client_exchange(
+    session: ClientSession,
+    local_node_id: &str,
+    expected_peer_node_id: &str,
+) {
+    let ClientSession {
+        socket,
+        authenticated_peer,
+        transcript,
+        keys,
+        handshake_elapsed,
+    } = session;
+
+    println!("local: {}", socket.local_addr().unwrap());
+    println!("peer: {}", socket.peer_addr().unwrap());
+    println!("local node: {local_node_id}");
+    println!("expected peer node: {expected_peer_node_id}");
     print_success(
         "client",
-        &server.responder_id,
+        &authenticated_peer,
         socket.peer_addr().unwrap(),
         &transcript,
         &keys,
@@ -464,9 +610,9 @@ fn receive_from(socket: &UdpSocket, description: &str) -> (String, SocketAddr) {
     (message.to_string(), source)
 }
 
-fn receive_connected(socket: &UdpSocket, description: &str) -> String {
-    let bytes = receive_connected_bytes(socket, description);
-    String::from_utf8(bytes).unwrap_or_else(|error| panic!("{description} is not UTF-8: {error}"))
+fn try_receive_connected(socket: &UdpSocket, description: &str) -> Result<String, String> {
+    let bytes = try_receive_connected_bytes(socket, description)?;
+    String::from_utf8(bytes).map_err(|error| format!("{description} is not UTF-8: {error}"))
 }
 
 fn receive_bytes_from(socket: &UdpSocket, description: &str) -> (Vec<u8>, SocketAddr) {
@@ -481,14 +627,22 @@ fn receive_bytes_from(socket: &UdpSocket, description: &str) -> (Vec<u8>, Socket
 }
 
 fn receive_connected_bytes(socket: &UdpSocket, description: &str) -> Vec<u8> {
-    let mut buffer = [0_u8; MAX_DATAGRAM_BYTES + 1];
-    let bytes_received = socket.recv(&mut buffer).unwrap_or_else(|error| {
+    try_receive_connected_bytes(socket, description).unwrap_or_else(|error| {
         panic!("failed to receive {description} within two seconds: {error}")
-    });
+    })
+}
+
+fn try_receive_connected_bytes(socket: &UdpSocket, description: &str) -> Result<Vec<u8>, String> {
+    let mut buffer = [0_u8; MAX_DATAGRAM_BYTES + 1];
+    let bytes_received = socket
+        .recv(&mut buffer)
+        .map_err(|error| format!("failed to receive {description}: {error}"))?;
     if bytes_received > MAX_DATAGRAM_BYTES {
-        panic!("{description} exceeds {MAX_DATAGRAM_BYTES}-byte limit");
+        return Err(format!(
+            "{description} exceeds {MAX_DATAGRAM_BYTES}-byte limit"
+        ));
     }
-    buffer[..bytes_received].to_vec()
+    Ok(buffer[..bytes_received].to_vec())
 }
 
 fn print_success(
@@ -515,6 +669,17 @@ fn print_success(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fallback_is_only_allowed_for_reachability_failures() {
+        let unreachable = ClientAttemptError::Unreachable("timed out".into());
+        let local = ClientAttemptError::Local("cannot bind".into());
+        let rejected = ClientAttemptError::Rejected("invalid signature".into());
+
+        assert!(unreachable.permits_fallback());
+        assert!(!local.permits_fallback());
+        assert!(!rejected.permits_fallback());
+    }
 
     #[test]
     fn both_peers_derive_the_same_directional_keys() {
