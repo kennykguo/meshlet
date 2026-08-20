@@ -231,6 +231,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom",
  "hkdf",
+ "libc",
  "sha2",
  "x25519-dalek",
 ]

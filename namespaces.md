@@ -52,6 +52,16 @@ sudo ip -n mesh-b link set lo up
 sudo ip -n mesh-c link set c0 up
 sudo ip -n mesh-c link set lo up
 
+# Create one layer-3 TUN interface in each endpoint namespace. Linux sends
+# packets routed to these interfaces to the Meshlet process instead of a NIC.
+sudo ip -n mesh-a tuntap add dev meshlet0 mode tun
+sudo ip -n mesh-a address add 100.64.0.1/24 dev meshlet0
+sudo ip -n mesh-a link set meshlet0 up
+
+sudo ip -n mesh-b tuntap add dev meshlet0 mode tun
+sudo ip -n mesh-b address add 100.64.0.2/24 dev meshlet0
+sudo ip -n mesh-b link set meshlet0 up
+
 # Teach each non-router which next-hop router handles a remote /24 network.
 sudo ip -n mesh-a route add 192.0.2.0/24 via 10.10.0.1 dev a0
 sudo ip -n mesh-a route add 203.0.113.0/24 via 10.10.0.1 dev a0

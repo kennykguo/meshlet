@@ -48,6 +48,7 @@ completed:
 
 implemented, awaiting your live observation:
     coordinator endpoint lookup and lease expiration
+    one ordinary ipv4 echo request and reply transported through tun and udp
 
 after that:
     tun-based layer-3 packet transport
@@ -1025,6 +1026,39 @@ meshlet process:
     reads the packet, chooses a peer, encrypts it, transports it, decrypts the peer packet, and writes it back to tun
 
 we will first forward one visible icmp packet, then add encryption. this keeps packet transport separate from cryptographic correctness.
+
+the first implementation is `tun-udp-one`. it attaches to an existing Linux
+TUN interface and handles one IPv4 packet in each direction. one worker reads a
+kernel-produced IP packet from TUN and sends those exact bytes as a UDP payload.
+the other receives a UDP payload and writes the recovered IP packet into TUN.
+
+start the mesh-b endpoint:
+
+sudo ip netns exec mesh-b target/release/meshlet \
+  tun-udp-one meshlet0 192.0.2.20:7200 192.0.2.10:7200
+
+start the mesh-a endpoint:
+
+sudo ip netns exec mesh-a target/release/meshlet \
+  tun-udp-one meshlet0 10.10.0.2:7200 192.0.2.20:7200
+
+observe the outer UDP transport at the router:
+
+sudo ip netns exec mesh-r tcpdump -nni any -X 'udp port 7200'
+
+ask mesh-a's ordinary Linux IP stack to send one ICMP echo request to mesh-b's
+overlay address:
+
+sudo ip netns exec mesh-a ping -c 1 -W 1 100.64.0.2
+
+`ping` knows nothing about Meshlet or UDP. its packet follows the connected
+`100.64.0.0/24` route into `meshlet0`; Meshlet reads it, carries it through UDP,
+and writes it into mesh-b's `meshlet0`. the reply follows the reverse path.
+
+this first packet transport is intentionally unencrypted. the capture exposes
+the complete inner IP packet inside the outer UDP payload. the next step will
+place the existing authenticated-encryption packet format between the TUN read
+and UDP send, then decrypt before the TUN write.
 
 stage 10: subnets and subnet routers
 

@@ -4,6 +4,7 @@ mod handshake;
 mod identity;
 mod relay;
 mod secure_packet;
+mod tun;
 
 use std::env;
 use std::io::{Read, Write};
@@ -457,6 +458,13 @@ fn main() {
 
             relay::run(&bind_address, &upstream_address);
         }
+        "tun-udp-one" => {
+            let tun_name = args.next().unwrap_or_else(|| "meshlet0".to_string());
+            let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:7200".to_string());
+            let peer_address = args.next().unwrap_or_else(|| "127.0.0.1:7201".to_string());
+
+            tun::run_one_exchange(&tun_name, &bind_address, &peer_address);
+        }
         _ => print_usage(),
     }
 }
@@ -481,7 +489,8 @@ fn print_usage() {
   meshlet secure-echo-server [BIND_ADDRESS] [IDENTITY_PATH] [AUTHORIZATION_PATH]
   meshlet secure-echo-client [BIND_ADDRESS] [SERVER_ADDRESS] [IDENTITY_PATH] [PEER_NODE_ID] [AUTHORIZATION_PATH]
   meshlet secure-echo-client-auto [BIND_ADDRESS] [DIRECT_ADDRESS] [RELAY_ADDRESS] [IDENTITY_PATH] [PEER_NODE_ID] [AUTHORIZATION_PATH]
-  meshlet udp-relay [BIND_ADDRESS] [UPSTREAM_ADDRESS]"
+  meshlet udp-relay [BIND_ADDRESS] [UPSTREAM_ADDRESS]
+  meshlet tun-udp-one [TUN_NAME] [BIND_ADDRESS] [PEER_ADDRESS]"
     );
 }
 
