@@ -45,13 +45,14 @@ completed:
     authenticated peer handshake and encrypted echo
     one-session opaque udp relay carrying the encrypted exchange
     automatic direct-first path selection with relay fallback
+    one ordinary ipv4 echo request and reply transported through tun and udp
 
 implemented, awaiting your live observation:
     coordinator endpoint lookup and lease expiration
-    one ordinary ipv4 echo request and reply transported through tun and udp
+    one private subnet reached through mesh-b as a subnet router
 
 after that:
-    tun-based layer-3 packet transport
+    authorized route advertisements and longest-prefix peer selection
 
 fundamentals-first roadmap
 
@@ -1055,10 +1056,11 @@ sudo ip netns exec mesh-a ping -c 1 -W 1 100.64.0.2
 `100.64.0.0/24` route into `meshlet0`; Meshlet reads it, carries it through UDP,
 and writes it into mesh-b's `meshlet0`. the reply follows the reverse path.
 
-this first packet transport is intentionally unencrypted. the capture exposes
-the complete inner IP packet inside the outer UDP payload. the next step will
-place the existing authenticated-encryption packet format between the TUN read
-and UDP send, then decrypt before the TUN write.
+this first packet transport is intentionally visible, so the capture exposes
+the complete inner IP packet inside the outer UDP payload. placing the existing
+authenticated-encryption packet format between the TUN and UDP operations is
+an integration step, not a new networking concept, so the learning path moves
+next to subnet routing.
 
 stage 10: subnets and subnet routers
 
@@ -1107,6 +1109,40 @@ subnet router:
     advertises reachability for a prefix and forwards packets to other machines behind it
 
 route advertisement is a claim, not proof. the control plane must decide whether to authorize, distribute, expire, or prefer that claim.
+
+the first subnet-router topology adds a machine that does not run Meshlet:
+
+mesh-a 100.64.0.1
+    ↓ TUN and UDP
+mesh-b 100.64.0.2 and 10.30.0.1
+    ↓ ordinary routed link
+mesh-d 10.30.0.2
+
+`mesh-b` is the subnet router because it connects the overlay to
+`10.30.0.0/24` and has Linux IP forwarding enabled. `mesh-a` routes that prefix
+into `meshlet0`. `mesh-d` routes replies for the overlay prefix through
+`10.30.0.1`.
+
+the Meshlet packet code is unchanged. an IP tunnel can carry a packet whose
+destination is the remote VPN node or a machine reachable through that node.
+
+start the mesh-b and mesh-a `tun-udp-one` processes exactly as in stage 9. in a
+third terminal, observe the inner packet crossing mesh-b:
+
+sudo ip netns exec mesh-b tcpdump -nni any 'icmp'
+
+then send one ordinary ping from mesh-a to the machine behind mesh-b:
+
+sudo ip netns exec mesh-a ping -c 1 -W 1 10.30.0.2
+
+the request enters mesh-b through `meshlet0` and leaves through `b1`. the reply
+enters through `b1` and leaves through `meshlet0`. the reported inner TTL is 63
+because mesh-b routed the inner packet once. mesh-r routes the outer UDP packet
+but does not modify the encapsulated inner packet's TTL.
+
+this proves the forwarding mechanism. the next step is the control decision:
+represent advertised prefixes, authorize them, and select the most specific
+matching peer using longest-prefix matching.
 
 stage 11: containers from first principles
 

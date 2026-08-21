@@ -3,21 +3,26 @@ sudo ip netns del mesh-a
 sudo ip netns del mesh-r
 sudo ip netns del mesh-b
 sudo ip netns del mesh-c
+sudo ip netns del mesh-d
 
 sudo ip netns add mesh-a
 sudo ip netns add mesh-r
 sudo ip netns add mesh-b
 sudo ip netns add mesh-c
+sudo ip netns add mesh-d
 
 
 # Let mesh-r move IP packets between its interfaces instead of acting only as a host.
 sudo ip netns exec mesh-r sysctl -w net.ipv4.ip_forward=1
+# mesh-b also routes overlay packets into the private subnet behind it.
+sudo ip netns exec mesh-b sysctl -w net.ipv4.ip_forward=1
 
 # Each veth pair is two virtual Ethernet interfaces joined back-to-back.
-# a0<->r0, b0<->r1, and c0<->r2 are the lab's three virtual cables.
+# a0<->r0, b0<->r1, c0<->r2, and b1<->d0 are virtual cables.
 sudo ip link add a0 type veth peer name r0
 sudo ip link add b0 type veth peer name r1
 sudo ip link add c0 type veth peer name r2
+sudo ip link add b1 type veth peer name d0
 
 sudo ip link set a0 netns mesh-a
 sudo ip link set r0 netns mesh-r
@@ -25,6 +30,8 @@ sudo ip link set b0 netns mesh-b
 sudo ip link set r1 netns mesh-r
 sudo ip link set c0 netns mesh-c
 sudo ip link set r2 netns mesh-r
+sudo ip link set b1 netns mesh-b
+sudo ip link set d0 netns mesh-d
 
 
 # Give each end of every virtual cable an IPv4 address.
@@ -35,6 +42,8 @@ sudo ip -n mesh-b address add 192.0.2.20/24 dev b0
 sudo ip -n mesh-r address add 203.0.113.1/24 dev r2
 sudo ip -n mesh-c address add 203.0.113.10/24 dev c0
 sudo ip -n mesh-c address add 203.0.113.20/24 dev c0
+sudo ip -n mesh-b address add 10.30.0.1/24 dev b1
+sudo ip -n mesh-d address add 10.30.0.2/24 dev d0
 
 
 # "up" enables an interface. "lo" is the machine's loopback interface.
@@ -47,10 +56,14 @@ sudo ip -n mesh-r link set r1 up
 sudo ip -n mesh-r link set r2 up
 
 sudo ip -n mesh-b link set b0 up
+sudo ip -n mesh-b link set b1 up
 sudo ip -n mesh-b link set lo up
 
 sudo ip -n mesh-c link set c0 up
 sudo ip -n mesh-c link set lo up
+
+sudo ip -n mesh-d link set d0 up
+sudo ip -n mesh-d link set lo up
 
 # Create one layer-3 TUN interface in each endpoint namespace. Linux sends
 # packets routed to these interfaces to the Meshlet process instead of a NIC.
@@ -65,8 +78,10 @@ sudo ip -n mesh-b link set meshlet0 up
 # Teach each non-router which next-hop router handles a remote /24 network.
 sudo ip -n mesh-a route add 192.0.2.0/24 via 10.10.0.1 dev a0
 sudo ip -n mesh-a route add 203.0.113.0/24 via 10.10.0.1 dev a0
+sudo ip -n mesh-a route add 10.30.0.0/24 dev meshlet0
 sudo ip -n mesh-b route add 203.0.113.0/24 via 192.0.2.10 dev b0
 sudo ip -n mesh-c route add 192.0.2.0/24 via 203.0.113.1 dev c0
+sudo ip -n mesh-d route add 100.64.0.0/24 via 10.30.0.1 dev d0
 
 
 # When private mesh-a packets leave r1 or r2, replace their source IP with
