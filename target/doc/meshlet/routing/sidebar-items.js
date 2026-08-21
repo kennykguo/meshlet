@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["prefix_mask"],"struct":["Advertisement","Ipv4Prefix","RouteRegistry","SelectedRoute"]};

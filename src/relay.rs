@@ -15,6 +15,8 @@ struct RelayState {
 }
 
 impl RelayState {
+    /// Creates empty one-client relay state for a configured upstream endpoint.
+    /// Called by `run` and relay unit tests before processing datagrams.
     fn new(upstream: SocketAddr) -> Self {
         Self {
             upstream,
@@ -22,6 +24,8 @@ impl RelayState {
         }
     }
 
+    /// Learns the first client and selects the opposite endpoint for each source.
+    /// Called by `run` for every datagram and directly by relay state tests.
     fn destination_for(&mut self, source: SocketAddr) -> Result<SocketAddr, String> {
         if source == self.upstream {
             return self
@@ -42,6 +46,8 @@ impl RelayState {
     }
 }
 
+/// Forwards the four opaque datagrams in one secure echo between client and peer.
+/// Called by `main` for the `udp-relay` learning command.
 pub fn run(bind_address: &str, upstream_address: &str) {
     let socket = UdpSocket::bind(bind_address).expect("failed to bind UDP relay socket");
     let upstream: SocketAddr = upstream_address
@@ -79,6 +85,8 @@ pub fn run(bind_address: &str, upstream_address: &str) {
 mod tests {
     use super::*;
 
+    /// Verifies that the learned client and configured upstream route bidirectionally.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn first_client_and_upstream_are_routed_to_each_other() {
         let client = SocketAddr::from(([203, 0, 113, 1], 50_000));
@@ -90,6 +98,8 @@ mod tests {
         assert_eq!(relay.destination_for(client), Ok(upstream));
     }
 
+    /// Verifies that the deliberately one-session relay refuses another client.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn one_session_relay_rejects_a_second_client() {
         let client = SocketAddr::from(([203, 0, 113, 1], 50_000));

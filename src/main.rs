@@ -1,3 +1,8 @@
+//! Meshlet command-line entry point and the introductory socket/latency demos.
+//!
+//! `main` owns argument defaults and dispatch only. Later-stage mechanisms live
+//! in their named modules so a command can be followed directly to its code.
+
 mod coordinator;
 mod firewall;
 mod handshake;
@@ -17,6 +22,8 @@ const RTT_WARMUP_SAMPLES: usize = 100;
 
 use firewall::{Endpoint, Firewall, FlowKey, TransportProtocol};
 
+/// Accepts one TCP connection, reads once, and echoes the bytes before closing.
+/// Called by `main` for the `tcp-server` learning command.
 fn tcp_server(bind_addr: &str) {
     let listener = TcpListener::bind(bind_addr).expect("failed to bind TCP listener");
 
@@ -35,12 +42,14 @@ fn tcp_server(bind_addr: &str) {
     println!("bytes received: {bytes_received}");
     println!("exact bytes: {:?}", &buffer[..bytes_received]);
 
-    stream // write back to the client
+    stream
         .write_all(&buffer[..bytes_received])
         .expect("failed to echo TCP bytes");
 
     println!("bytes sent: {bytes_received}");
 }
+/// Sends a fixed TCP message and reads the echoed stream until the server closes it.
+/// Called by `main` for the `tcp-client` learning command.
 fn tcp_client(server_addr: &str) {
     let mut stream = TcpStream::connect(server_addr).expect("failed to connect to TCP server");
 
@@ -55,7 +64,7 @@ fn tcp_client(server_addr: &str) {
 
     let mut response = Vec::new();
 
-    let bytes_received = stream // check for a response after sending
+    let bytes_received = stream
         .read_to_end(&mut response)
         .expect("failed to read TCP response");
 
@@ -63,6 +72,8 @@ fn tcp_client(server_addr: &str) {
     println!("exact bytes: {response:?}");
 }
 
+/// Receives one UDP datagram and echoes it to the source endpoint.
+/// Called by `main` for the `udp-server` learning command.
 fn udp_server(bind_addr: &str) {
     let socket = UdpSocket::bind(bind_addr).expect("failed to bind UDP socket");
     println!("local: {}", socket.local_addr().unwrap());
@@ -84,6 +95,8 @@ fn udp_server(bind_addr: &str) {
     println!("bytes sent: {bytes_sent}");
 }
 
+/// Sends one UDP datagram and waits for one echo response.
+/// Called by `main` for the `udp-client` learning command.
 fn udp_client(bind_addr: &str, server_addr: &str) {
     let socket = UdpSocket::bind(bind_addr).expect("failed to bind UDP socket");
 
@@ -92,7 +105,7 @@ fn udp_client(bind_addr: &str, server_addr: &str) {
     println!("local: {}", socket.local_addr().unwrap());
     println!("remote: {server_addr}");
 
-    let bytes_sent = socket // socket syntax. but same as tcp
+    let bytes_sent = socket
         .send_to(message, server_addr)
         .expect("failed to send UDP datagram");
 
@@ -109,6 +122,8 @@ fn udp_client(bind_addr: &str, server_addr: &str) {
     println!("exact bytes: {:?}", &buffer[..bytes_received]);
 }
 
+/// Echoes UDP datagrams continuously without per-packet output.
+/// Called by `main` for `udp-bench-server` as the peer for `udp_rtt_client`.
 fn udp_bench_server(bind_addr: &str) {
     let socket = UdpSocket::bind(bind_addr).expect("failed to bind UDP benchmark socket");
     println!("local: {}", socket.local_addr().unwrap());
@@ -127,6 +142,8 @@ fn udp_bench_server(bind_addr: &str) {
     }
 }
 
+/// Selects a nearest-rank percentile from an already sorted duration slice.
+/// Called by `udp_rtt_client` and its nearest-rank unit test.
 fn percentile(sorted: &[Duration], percentile: usize) -> Duration {
     assert!(
         !sorted.is_empty(),
@@ -138,10 +155,14 @@ fn percentile(sorted: &[Duration], percentile: usize) -> Duration {
     sorted[rank.saturating_sub(1)]
 }
 
+/// Prints one duration in microseconds under a supplied label.
+/// Called by `udp_rtt_client` for its min, p50, p99, and max summary.
 fn print_latency(label: &str, duration: Duration) {
     println!("{label}: {:.3} us", duration.as_secs_f64() * 1_000_000.0);
 }
 
+/// Measures stop-and-wait UDP round-trip times and reports their distribution.
+/// Called by `main` for `udp-rtt-client`; it expects `udp_bench_server` as its peer.
 fn udp_rtt_client(bind_addr: &str, server_addr: &str, samples: usize) {
     assert!(samples > 0, "SAMPLES must be greater than zero");
 
@@ -155,7 +176,7 @@ fn udp_rtt_client(bind_addr: &str, server_addr: &str, samples: usize) {
 
     println!("local: {}", socket.local_addr().unwrap());
     println!("remote: {}", socket.peer_addr().unwrap());
-    println!("warmup samples: {RTT_WARMUP_SAMPLES}"); // constant
+    println!("warmup samples: {RTT_WARMUP_SAMPLES}");
     println!("measured samples: {samples}");
 
     let total_samples = RTT_WARMUP_SAMPLES
@@ -168,18 +189,15 @@ fn udp_rtt_client(bind_addr: &str, server_addr: &str, samples: usize) {
         let sequence = u64::try_from(sequence).expect("sequence number does not fit in u64");
         let request = sequence.to_be_bytes();
 
-        // start the timer
+        // `Instant` is monotonic, so wall-clock adjustments cannot corrupt RTT.
         let start = Instant::now();
-
-        // send the request
         socket
             .send(&request)
             .expect("failed to send UDP RTT request");
-        let bytes_received = socket // wait for echo response
+        let bytes_received = socket
             .recv(&mut response)
             .expect("failed to receive UDP RTT response within one second");
 
-        // stop the timer
         let elapsed = start.elapsed();
 
         assert_eq!(
@@ -202,10 +220,14 @@ fn udp_rtt_client(bind_addr: &str, server_addr: &str, samples: usize) {
     print_latency("max", latencies[latencies.len() - 1]);
 }
 
+/// Converts a firewall decision into its short display label.
+/// Called only by `firewall_demo` when printing each modeled decision.
 fn verdict(allowed: bool) -> &'static str {
     if allowed { "ALLOW" } else { "DENY" }
 }
 
+/// Walks through allowed, denied, protocol-mismatched, and expired firewall flows.
+/// Called by `main` for the `firewall-demo` learning command.
 fn firewall_demo() {
     let now = Instant::now();
     let timeout = Duration::from_secs(30);
@@ -214,7 +236,6 @@ fn firewall_demo() {
     let outbound = FlowKey::new(TransportProtocol::Udp, client, server);
     let matching_reply = outbound.reverse();
     let wrong_port_reply = FlowKey::new(
-        // reverse the endpoint
         TransportProtocol::Udp,
         Endpoint::new(Ipv4Addr::new(192, 0, 2, 20), 8_001),
         client,
@@ -277,6 +298,8 @@ fn firewall_demo() {
     println!("   tracked flows: {}", firewall.tracked_reply_flows());
 }
 
+/// Parses the first command-line argument and dispatches to one mechanism entry point.
+/// Called by the operating system when the `meshlet` executable starts.
 fn main() {
     let mut args = env::args().skip(1);
 
@@ -502,6 +525,8 @@ fn main() {
     }
 }
 
+/// Prints every accepted command and its positional arguments.
+/// Called by `main` when no command or an unknown command is supplied.
 fn print_usage() {
     eprintln!(
         "Usage:
@@ -534,6 +559,8 @@ fn print_usage() {
 mod tests {
     use super::*;
 
+    /// Verifies the latency helper's nearest-rank behavior at key percentiles.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn percentile_uses_nearest_rank() {
         let samples: Vec<_> = (1..=100).map(Duration::from_nanos).collect();

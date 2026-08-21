@@ -19,6 +19,8 @@ pub(crate) enum Direction {
 }
 
 impl Direction {
+    /// Converts a packet direction into its one-byte wire representation.
+    /// Called while building packet headers and nonces.
     fn wire_value(self) -> u8 {
         match self {
             Self::ClientToServer => 0,
@@ -26,6 +28,8 @@ impl Direction {
         }
     }
 
+    /// Parses a one-byte wire direction or rejects unknown values.
+    /// Called by `PacketReceiver::open` before decrypting a packet.
     fn from_wire(value: u8) -> Result<Self, String> {
         match value {
             0 => Ok(Self::ClientToServer),
@@ -34,6 +38,8 @@ impl Direction {
         }
     }
 
+    /// Returns a human-readable direction for validation errors.
+    /// Called by `PacketReceiver::open` when the received direction is wrong.
     fn label(self) -> &'static str {
         match self {
             Self::ClientToServer => "client-to-server",
@@ -49,6 +55,8 @@ pub(crate) struct PacketSender {
 }
 
 impl PacketSender {
+    /// Creates an encryptor for one key and one traffic direction at packet zero.
+    /// Called by secure echo clients and servers after session-key derivation.
     pub(crate) fn new(key: [u8; 32], direction: Direction) -> Self {
         let key = Key::from(key);
         Self {
@@ -58,6 +66,8 @@ impl PacketSender {
         }
     }
 
+    /// Encrypts and authenticates one plaintext under the next packet number.
+    /// Called by secure echo clients for requests and servers for responses.
     pub(crate) fn seal(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, String> {
         let packet_number = self.next_packet_number;
         let next_packet_number = packet_number
@@ -71,6 +81,7 @@ impl PacketSender {
                 &nonce,
                 Payload {
                     msg: plaintext,
+                    // AAD stays visible but is covered by the authentication tag.
                     aad: &header,
                 },
             )
@@ -92,6 +103,8 @@ pub(crate) struct PacketReceiver {
 }
 
 impl PacketReceiver {
+    /// Creates a decryptor expecting one key, direction, and packet number zero.
+    /// Called by secure echo clients and servers after session-key derivation.
     pub(crate) fn new(key: [u8; 32], direction: Direction) -> Self {
         let key = Key::from(key);
         Self {
@@ -101,6 +114,8 @@ impl PacketReceiver {
         }
     }
 
+    /// Validates ordering and authentication before returning decrypted plaintext.
+    /// Called by secure echo clients for responses and servers for requests.
     pub(crate) fn open(&mut self, packet: &[u8]) -> Result<Vec<u8>, String> {
         if packet.len() < HEADER_BYTES + AUTHENTICATION_TAG_BYTES {
             return Err("encrypted packet is too short".into());
@@ -150,6 +165,8 @@ impl PacketReceiver {
     }
 }
 
+/// Encodes the protocol marker, direction, and packet number into a visible header.
+/// Called by `PacketSender::seal` before authenticated encryption.
 fn packet_header(direction: Direction, packet_number: u64) -> [u8; HEADER_BYTES] {
     let mut header = [0_u8; HEADER_BYTES];
     header[..MAGIC.len()].copy_from_slice(&MAGIC);
@@ -158,6 +175,8 @@ fn packet_header(direction: Direction, packet_number: u64) -> [u8; HEADER_BYTES]
     header
 }
 
+/// Derives a unique 96-bit ChaCha20-Poly1305 nonce from direction and packet number.
+/// Called by packet sealing and opening so both peers reconstruct the same nonce.
 fn packet_nonce(direction: Direction, packet_number: u64) -> Nonce {
     let mut nonce = [0_u8; 12];
     nonce[0] = direction.wire_value();
@@ -169,6 +188,8 @@ fn packet_nonce(direction: Direction, packet_number: u64) -> Nonce {
 mod tests {
     use super::*;
 
+    /// Verifies successful decryption and rejection of a repeated packet number.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn encrypted_packet_round_trips_and_replay_is_rejected() {
         let key = [7_u8; 32];
@@ -180,6 +201,8 @@ mod tests {
         assert!(receiver.open(&packet).is_err());
     }
 
+    /// Verifies failed authentication does not consume the expected packet number.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn modified_ciphertext_is_rejected_without_advancing_receiver() {
         let key = [9_u8; 32];

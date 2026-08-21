@@ -1,3 +1,8 @@
+//! UDP control-plane registration, endpoint lookup, and route advertisement.
+//!
+//! `MESHLET/1` is the unauthenticated learning protocol. `MESHLET/2` adds a
+//! one-use signed challenge for node registration while retaining endpoint lookup.
+
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
@@ -105,6 +110,8 @@ enum AuthResponse {
 }
 
 impl AuthResponse {
+    /// Serializes one authenticated coordinator response into protocol text.
+    /// Called by `run_authenticated_server` immediately before sending a reply.
     fn encode(&self) -> String {
         match self {
             Self::Challenge { node_id, challenge } => format!(
@@ -132,6 +139,8 @@ impl AuthResponse {
 }
 
 impl Response {
+    /// Serializes one learning-protocol coordinator response into protocol text.
+    /// Called by `run_server` immediately before sending a reply.
     fn encode(&self) -> String {
         match self {
             Self::Registered {
@@ -183,6 +192,8 @@ struct Registry {
 }
 
 impl Registry {
+    /// Applies one parsed registration, lookup, advertisement, or route lookup.
+    /// Called by `run_server` for each request and directly by registry tests.
     fn handle(&mut self, request: Request, source: SocketAddr, now: Instant) -> Response {
         self.remove_expired(now);
 
@@ -192,6 +203,8 @@ impl Registry {
                     .checked_add(lease)
                     .expect("registration expiration is outside Instant's range");
 
+                // Record the UDP source observed by the server, not an address
+                // claimed inside the request, so NAT translation is visible.
                 self.registrations.insert(
                     node_id.clone(),
                     Registration {
@@ -236,6 +249,8 @@ impl Registry {
         }
     }
 
+    /// Deletes node registrations whose lease deadline is at or before `now`.
+    /// Called by `handle` and authenticated coordinator expiration cleanup.
     fn remove_expired(&mut self, now: Instant) {
         self.registrations
             .retain(|_, registration| registration.expires_at > now);
@@ -255,6 +270,8 @@ struct AuthenticatedCoordinator {
 }
 
 impl AuthenticatedCoordinator {
+    /// Creates authenticated coordinator state from a trusted public-key set.
+    /// Called by `run_authenticated_server` and authenticated test fixtures.
     fn new(authorizations: Authorizations) -> Self {
         Self {
             registry: Registry::default(),
@@ -263,6 +280,8 @@ impl AuthenticatedCoordinator {
         }
     }
 
+    /// Stores a short-lived challenge bound to one node ID and source endpoint.
+    /// Called by `run_authenticated_server` and authentication tests.
     fn issue_challenge(
         &mut self,
         node_id: String,
@@ -290,6 +309,8 @@ impl AuthenticatedCoordinator {
         AuthResponse::Challenge { node_id, challenge }
     }
 
+    /// Verifies and consumes a challenge before recording the observed endpoint.
+    /// Called by `run_authenticated_server` and authentication tests.
     fn register(
         &mut self,
         node_id: String,
@@ -301,6 +322,8 @@ impl AuthenticatedCoordinator {
     ) -> AuthResponse {
         self.remove_expired(now);
 
+        // Removing before verification makes every issued challenge one-use,
+        // including a failed attempt, rather than leaving replayable state.
         let Some(pending) = self.challenges.remove(&(node_id.clone(), source)) else {
             return AuthResponse::Error(
                 "no unexpired challenge exists for this node and source endpoint".into(),
@@ -340,6 +363,8 @@ impl AuthenticatedCoordinator {
         }
     }
 
+    /// Returns an authenticated node's current unexpired observed endpoint.
+    /// Called by `run_authenticated_server` and authentication tests.
     fn lookup(&mut self, node_id: String, now: Instant) -> AuthResponse {
         self.remove_expired(now);
 
@@ -352,6 +377,8 @@ impl AuthenticatedCoordinator {
         }
     }
 
+    /// Deletes expired registrations and pending authentication challenges.
+    /// Called before authenticated challenge issuance, registration, and lookup.
     fn remove_expired(&mut self, now: Instant) {
         self.registry.remove_expired(now);
         self.challenges
@@ -359,6 +386,8 @@ impl AuthenticatedCoordinator {
     }
 }
 
+/// Reports whether a node ID fits the protocol's bounded ASCII grammar.
+/// Called by coordinator parsers plus identity and handshake validation.
 pub(crate) fn valid_node_id(node_id: &str) -> bool {
     !node_id.is_empty()
         && node_id.len() <= MAX_NODE_ID_BYTES
@@ -367,6 +396,8 @@ pub(crate) fn valid_node_id(node_id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
+/// Parses one `MESHLET/1` datagram into a typed control-plane request.
+/// Called by `run_server` and unauthenticated protocol tests.
 fn parse_request(message: &[u8]) -> Result<Request, String> {
     let message = std::str::from_utf8(message).map_err(|_| "request is not UTF-8".to_string())?;
     let fields: Vec<_> = message.split_ascii_whitespace().collect();
@@ -429,6 +460,8 @@ fn parse_request(message: &[u8]) -> Result<Request, String> {
     }
 }
 
+/// Parses one `MESHLET/2` datagram into a typed authenticated request.
+/// Called by `run_authenticated_server` before dispatching each datagram.
 fn parse_auth_request(message: &[u8]) -> Result<AuthRequest, String> {
     let message = std::str::from_utf8(message).map_err(|_| "request is not UTF-8".to_string())?;
     let fields: Vec<_> = message.split_ascii_whitespace().collect();
@@ -477,6 +510,8 @@ fn parse_auth_request(message: &[u8]) -> Result<AuthRequest, String> {
     }
 }
 
+/// Converts the node-ID predicate into a descriptive `Result` error.
+/// Called by request parsers and the route-advertisement client.
 fn validate_node_id(node_id: &str) -> Result<(), String> {
     if valid_node_id(node_id) {
         Ok(())
@@ -485,6 +520,8 @@ fn validate_node_id(node_id: &str) -> Result<(), String> {
     }
 }
 
+/// Parses and bounds a lease duration expressed as decimal seconds.
+/// Called by both protocol parsers and registration/advertisement clients.
 fn parse_lease(lease_seconds: &str) -> Result<Duration, String> {
     let lease_seconds: u64 = lease_seconds
         .parse()
@@ -499,6 +536,8 @@ fn parse_lease(lease_seconds: &str) -> Result<Duration, String> {
     Ok(Duration::from_secs(lease_seconds))
 }
 
+/// Builds the canonical bytes covered by an authenticated registration signature.
+/// Called by authenticated client/server registration and authentication tests.
 fn registration_signing_message(
     node_id: &str,
     lease: Duration,
@@ -512,6 +551,8 @@ fn registration_signing_message(
     .into_bytes()
 }
 
+/// Runs the unauthenticated UDP coordinator request loop.
+/// Called by `main` for `coordinator-server` and `coordinator-route-server`.
 pub fn run_server(bind_address: &str) {
     let socket = UdpSocket::bind(bind_address).expect("failed to bind coordinator UDP socket");
     let mut registry = Registry::default();
@@ -545,6 +586,8 @@ pub fn run_server(bind_address: &str) {
     }
 }
 
+/// Runs the challenge-based authenticated UDP coordinator request loop.
+/// Called by `main` for the `coordinator-server-auth` command.
 pub fn run_authenticated_server(bind_address: &str, authorization_path: &str) {
     let socket =
         UdpSocket::bind(bind_address).expect("failed to bind authenticated coordinator UDP socket");
@@ -605,6 +648,8 @@ pub fn run_authenticated_server(bind_address: &str, authorization_path: &str) {
     }
 }
 
+/// Sends one textual UDP request and prints its textual response.
+/// Called by simple registration, lookup, and route client wrappers.
 fn exchange(bind_address: &str, server_address: &str, request: &str) {
     let socket = UdpSocket::bind(bind_address).expect("failed to bind coordinator client socket");
     socket
@@ -632,16 +677,22 @@ fn exchange(bind_address: &str, server_address: &str, request: &str) {
     println!("response: {response}");
 }
 
+/// Sends an unauthenticated leased endpoint registration request.
+/// Called by `main` for the `coordinator-register` command.
 pub fn register(bind_address: &str, server_address: &str, node_id: &str, lease_seconds: u64) {
     let request = format!("{PROTOCOL_VERSION} REGISTER {node_id} {lease_seconds}");
     exchange(bind_address, server_address, &request);
 }
 
+/// Sends an unauthenticated lookup request for a node's observed endpoint.
+/// Called by `main` for the `coordinator-lookup` command.
 pub fn lookup(bind_address: &str, server_address: &str, node_id: &str) {
     let request = format!("{PROTOCOL_VERSION} LOOKUP {node_id}");
     exchange(bind_address, server_address, &request);
 }
 
+/// Completes challenge-response registration using a node's private identity.
+/// Called by `main` for the `coordinator-register-auth` command.
 pub fn register_authenticated(
     bind_address: &str,
     server_address: &str,
@@ -702,11 +753,15 @@ pub fn register_authenticated(
     println!("registration response: {registration_response}");
 }
 
+/// Sends a `MESHLET/2` lookup request without changing coordinator state.
+/// Called by `main` for the `coordinator-lookup-auth` command.
 pub fn lookup_authenticated(bind_address: &str, server_address: &str, node_id: &str) {
     let request = format!("{AUTH_PROTOCOL_VERSION} LOOKUP {node_id}");
     exchange(bind_address, server_address, &request);
 }
 
+/// Validates and sends a leased node-to-IPv4-prefix advertisement.
+/// Called by `main` for the `coordinator-advertise-route` command.
 pub fn advertise_route(
     bind_address: &str,
     server_address: &str,
@@ -727,6 +782,8 @@ pub fn advertise_route(
     exchange(bind_address, server_address, &request);
 }
 
+/// Validates and sends a route lookup for one IPv4 destination.
+/// Called by `main` for the `coordinator-route-lookup` command.
 pub fn route_lookup(bind_address: &str, server_address: &str, destination: &str) {
     let destination: Ipv4Addr = destination
         .parse()
@@ -735,6 +792,8 @@ pub fn route_lookup(bind_address: &str, server_address: &str, destination: &str)
     exchange(bind_address, server_address, &request);
 }
 
+/// Receives one bounded UTF-8 datagram from an already connected UDP socket.
+/// Called twice by `register_authenticated` for challenge and registration replies.
 fn receive_connected(socket: &UdpSocket, description: &str) -> String {
     let mut response = [0_u8; MAX_DATAGRAM_BYTES];
     let bytes_received = socket.recv(&mut response).unwrap_or_else(|error| {
@@ -745,6 +804,8 @@ fn receive_connected(socket: &UdpSocket, description: &str) -> String {
         .to_string()
 }
 
+/// Validates a challenge response and extracts its fixed-size random value.
+/// Called by `register_authenticated` before constructing signed registration bytes.
 fn parse_challenge_response(
     response: &str,
     expected_node_id: &str,
@@ -775,12 +836,16 @@ mod tests {
     const ENDPOINT_B: SocketAddr =
         SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 40_001);
 
+    /// Builds matching deterministic identity and coordinator authorization state.
+    /// Called by every authenticated coordinator unit test in this module.
     fn authenticated_coordinator() -> (Identity, AuthenticatedCoordinator) {
         let identity = Identity::from_secret_bytes("mesh-a", [7_u8; 32]);
         let authorizations = Authorizations::from_key("mesh-a", identity.verifying_key());
         (identity, AuthenticatedCoordinator::new(authorizations))
     }
 
+    /// Verifies that a route advertisement is returned by destination lookup.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn advertised_route_is_selected_for_its_destination() {
         let now = Instant::now();
@@ -820,6 +885,8 @@ mod tests {
         );
     }
 
+    /// Verifies parsing of a well-formed versioned registration request.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn parses_versioned_register_request() {
         assert_eq!(
@@ -831,6 +898,8 @@ mod tests {
         );
     }
 
+    /// Verifies that registration stores the UDP source observed by the server.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn register_records_observed_source_endpoint() {
         let now = Instant::now();
@@ -868,6 +937,8 @@ mod tests {
         );
     }
 
+    /// Verifies that a registration is absent exactly at its lease deadline.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn registration_is_absent_at_expiration_boundary() {
         let now = Instant::now();
@@ -897,6 +968,8 @@ mod tests {
         );
     }
 
+    /// Verifies that re-registration refreshes both endpoint and expiration time.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn repeated_registration_refreshes_location_and_deadline() {
         let now = Instant::now();
@@ -935,6 +1008,8 @@ mod tests {
         );
     }
 
+    /// Verifies rejection of malformed node IDs and out-of-range leases.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn rejects_invalid_node_id_and_lease() {
         assert!(parse_request(b"MESHLET/1 REGISTER mesh/a 30").is_err());
@@ -942,6 +1017,8 @@ mod tests {
         assert!(parse_request(b"MESHLET/1 REGISTER mesh-a 301").is_err());
     }
 
+    /// Verifies that the unauthenticated parser rejects another protocol version.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn rejects_unknown_protocol_version() {
         assert_eq!(
@@ -950,6 +1027,8 @@ mod tests {
         );
     }
 
+    /// Verifies that a valid challenge signature records the observed endpoint.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn valid_challenge_signature_registers_observed_endpoint() {
         let now = Instant::now();
@@ -991,6 +1070,8 @@ mod tests {
         );
     }
 
+    /// Verifies that consuming a challenge prevents registration replay.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn signed_registration_cannot_be_replayed() {
         let now = Instant::now();
@@ -1026,6 +1107,8 @@ mod tests {
         );
     }
 
+    /// Verifies that a challenge cannot be used from a different source endpoint.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn challenge_is_bound_to_observed_source_endpoint() {
         let now = Instant::now();
@@ -1050,6 +1133,8 @@ mod tests {
         );
     }
 
+    /// Verifies that altering the signed lease invalidates registration.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn signature_covers_lease_and_challenge() {
         let now = Instant::now();
@@ -1073,6 +1158,8 @@ mod tests {
         );
     }
 
+    /// Verifies that an unauthorized private key cannot claim an authorized ID.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn different_private_key_cannot_claim_authorized_node_id() {
         let now = Instant::now();
@@ -1096,6 +1183,8 @@ mod tests {
         );
     }
 
+    /// Verifies that an expired challenge cannot authorize registration.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn expired_challenge_cannot_authorize_registration() {
         let now = Instant::now();

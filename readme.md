@@ -2,6 +2,9 @@ project: meshlet
 
 build a small encrypted overlay network in rust on one arch linux machine.
 
+implementation index: see `CODEMAP.md` to find code by command, concept, or
+runtime call path.
+
 learning contract
 
 this repository exists to teach networking from first principles. every stage should answer four questions:
@@ -52,8 +55,8 @@ completed:
 implemented, awaiting your live observation:
     coordinator endpoint lookup and lease expiration
 
-after that:
-    containers as isolated processes
+next:
+    toy container mechanisms: namespaces, cgroup v2, root filesystem, runc, and gvisor
 
 fundamentals-first roadmap
 
@@ -1245,6 +1248,226 @@ other containers or external networks
 
 the learning experiment will create the equivalent topology manually, then run the same meshlet process through a container runtime and identify which kernel objects the runtime created. the goal is to understand the abstraction, not memorize docker or kubernetes commands.
 
+container learning path: toy mechanisms before products
+
+the goal is to predict what the kernel and runtime do, then measure their cost.
+we will not build an image registry, orchestrator, production sandbox, or full
+linux system-call implementation.
+
+language sequencing:
+    stage 11 uses go for the toy launcher because process creation and linux
+    runtime code are a natural fit for it. go and containers will not be taught
+    simultaneously. first, write an ordinary go program that starts an ordinary
+    child process. only after that code is understood will each linux isolation
+    mechanism be added one at a time.
+
+    you will write the launcher. each increment will be small enough to explain
+    completely before it is used. stage 12 remains a separate wireshark stage;
+    packet capture is not required to learn the initial container mechanisms.
+
+fast-feedback contract:
+
+1. a unit test should finish in about one second
+2. a live mechanism experiment should finish in under five seconds
+3. a focused benchmark should finish in under thirty seconds
+4. reuse one local root filesystem and one release binary; do not rebuild or
+   download an image for every experiment
+5. change one isolation boundary at a time and compare against the same native
+   workload
+
+11.0: go and ordinary process execution
+
+this is a language prerequisite, not yet a container.
+
+go sequence:
+
+1. create a module and one `package main` source file
+2. define `func main`, print values, and read command-line arguments
+3. move validation into a function and return an explicit `error`
+4. construct an `exec.Cmd` describing a child program
+5. connect the child's input and output to the terminal and run it
+6. inspect the parent and child with `ps`
+
+every new go term will be defined when it first appears: package, import,
+function, variable, slice, variadic argument, multiple return values, interface,
+pointer, method, and error. concurrency, garbage collection, interfaces of our
+own, and networking are deliberately postponed.
+
+checkpoint:
+    the go launcher runs a selected one-shot command with no isolation. its
+    behavior is still equivalent to starting an ordinary child process.
+
+11.1: process plus namespaces
+
+mental model:
+    a container starts as an ordinary process. namespaces change which kernel
+    objects that process can see.
+
+linux experiment:
+    use `unshare` to give one short-lived meshlet command new PID, hostname, and
+    mount views. use `lsns`, `ps`, and `/proc/PID/ns` to compare the host and
+    isolated views.
+
+toy implementation:
+    extend the understood go launcher with one namespace flag at a time. it is
+    a teaching launcher, not a security boundary.
+
+prediction to learn:
+    the program code is unchanged; only its operating-system view changes.
+
+11.2: cgroup v2
+
+mental model:
+    a namespace controls visibility. a cgroup accounts for and limits resource
+    consumption. neither concept implies the other.
+
+linux experiment:
+    place one deterministic worker in a child cgroup, inspect `cpu.stat` and
+    `memory.current`, then apply one safe CPU or memory limit.
+
+toy implementation:
+    extend the launcher by writing the child PID and limits to the cgroup v2
+    filesystem. no daemon or scheduler will be added.
+
+prediction to learn:
+    the process sees the same instructions, but the kernel changes how much CPU
+    or memory it may consume.
+
+11.3: root filesystem and image
+
+mental model:
+    a root filesystem is the directory tree a process sees as `/`. an image is
+    a stored, transportable description of filesystem layers and startup
+    metadata; it is not a running container.
+
+linux experiment:
+    construct one tiny local root filesystem, enter it with a new mount
+    namespace, and observe which files do and do not exist.
+
+toy implementation:
+    add root-directory selection, a private `/proc`, a working directory, and
+    environment variables to the launcher. skip layered filesystems and image
+    distribution.
+
+prediction to learn:
+    process isolation and filesystem packaging are separate mechanisms.
+
+11.4: OCI bundles and `runc`
+
+OCI means Open Container Initiative. its runtime specification defines a
+portable bundle: a `config.json` description plus a root filesystem. `runc` is
+a low-level OCI runtime that reads that bundle, creates the requested
+namespaces, mounts, and cgroup, and starts the configured process.
+
+experiment:
+    express the same toy launcher configuration as an OCI bundle; run it with
+    `runc create`, `runc state`, `runc start`, and `runc delete`; compare the
+    resulting namespace identifiers and cgroup membership.
+
+important boundary:
+    `runc` mainly constructs and starts the environment. after startup, an
+    ordinary native-container application still makes system calls directly to
+    the host Linux kernel. `runc` is not a proxy on every application request.
+
+official references:
+    https://github.com/opencontainers/runtime-spec/blob/main/runtime.md
+    https://github.com/opencontainers/runc/blob/main/README.md
+
+11.5: higher-level runtime, briefly
+
+mental model:
+    Podman or Docker manages images, defaults, networking, and lifecycle; it
+    eventually delegates low-level process creation to an OCI runtime such as
+    `runc`.
+
+experiment:
+    run the same local workload once with Podman and inspect its process tree,
+    namespace identifiers, cgroup, mounts, and generated OCI configuration.
+
+scope boundary:
+    stop after mapping the layers. do not introduce Kubernetes, deployment
+    manifests, registries, or container administration.
+
+11.6: gVisor and `runsc`
+
+gVisor is different from a native `runc` container. its `runsc` OCI runtime
+starts a userspace application kernel called the Sentry. most application
+system calls are handled by the Sentry instead of going directly to the host
+Linux kernel. gVisor also normally uses its own userspace network stack,
+Netstack.
+
+mental model:
+
+native or runc container:
+    application -> host Linux system call
+
+gVisor:
+    application -> Sentry implementation -> limited host Linux operations
+
+toy implementation:
+    build a tiny userspace operation broker. a toy application asks it to
+    perform only a few abstract operations such as reading a file or sending a
+    UDP datagram. this demonstrates mediation but will not pretend to intercept
+    arbitrary Linux system calls or provide real sandbox security.
+
+real experiment:
+    run the same OCI bundle with `runsc`, inspect its Sentry process and network
+    view, then compare behavior with `runc`. use the current `systrap` platform
+    first; compare KVM only if the host exposes suitable hardware support.
+
+official references:
+    https://gvisor.dev/docs/
+    https://gvisor.dev/docs/architecture_guide/platforms/
+    https://gvisor.dev/docs/user_guide/networking/
+
+11.7: performance and low-latency reasoning
+
+measure setup separately from steady-state work:
+
+cold start:
+    elapsed time from launcher invocation until the process is ready
+
+CPU-only loop:
+    mostly measures instruction execution without many system calls
+
+system-call loop:
+    exposes boundary-crossing cost
+
+filesystem metadata:
+    repeated open, stat, and close operations
+
+UDP RTT and throughput:
+    exposes network-stack copies, scheduling, batching, and queueing
+
+memory:
+    maximum resident memory and idle per-container overhead
+
+tools:
+    `/usr/bin/time -v` for elapsed time and memory
+    `strace -c` for system-call counts and time
+    `perf stat` for cycles, instructions, context switches, and faults
+    meshlet's release-mode UDP benchmark for p50 and p99 latency
+
+comparison order:
+
+1. native process
+2. manual namespaces
+3. toy launcher
+4. runc
+5. gVisor systrap
+6. gVisor KVM only when appropriate
+
+expected reasoning:
+    namespaces usually add little steady-state data-path work. cgroup limits can
+    create throttling or contention. runc setup affects startup more than the
+    application's steady-state system-call path. gVisor adds software work at
+    system-call, filesystem, and networking boundaries, so I/O-heavy workloads
+    generally expose more overhead than CPU-heavy workloads.
+
+we will report distributions rather than one timing: warm-up, p50, p99,
+throughput, CPU usage, memory, and context switches. a performance change is
+accepted only when the measured workload and boundary are clearly named.
+
 stage 12: wireshark and evidence-driven debugging
 
 tcpdump and wireshark observe the same packet layers through libpcap-compatible captures. tcpdump is compact and scriptable; wireshark provides interactive decoding, filtering, stream following, timing views, and packet-by-packet field inspection.
@@ -1400,13 +1623,18 @@ the project’s purpose is to make internet routing, transport ports, public and
 
 golang learning track
 
-go fits this project best at a service boundary, especially a later coordinator implementation. coordinators perform request parsing, concurrent network io, timers, maps, serialization, and operational diagnostics: areas where go's small language, garbage collection, goroutines, channels, networking standard library, fast builds, and simple binary deployment are strong.
+go first appears in stage 11.0 because a small process launcher is a concrete,
+bounded program. it teaches source files, functions, arguments, errors, and
+child processes before any linux isolation mechanism is added. the learner,
+rather than the assistant, writes each launcher increment.
+
+go also fits this project at a later service boundary, especially a coordinator implementation. coordinators perform request parsing, concurrent network io, timers, maps, serialization, and operational diagnostics: areas where go's small language, garbage collection, goroutines, channels, networking standard library, fast builds, and simple binary deployment are strong.
 
 meshlet's packet data path will remain in rust so the project can study explicit ownership, byte representations, cryptographic state, system calls, tun io, and latency without introducing a garbage-collected runtime into the hottest path.
 
 after the coordinator protocol and authentication rules are stable, implement the same coordinator contract in go and run the rust nodes against both servers. this creates a meaningful language boundary and proves that the protocol, rather than one implementation, is the contract.
 
-the go learning sequence will start from zero:
+the broader go learning sequence starts from zero:
 
 1. source files, packages, modules, compilation, and the `main` entry point
 2. values, variables, constants, functions, structs, methods, pointers, slices, and maps
@@ -1416,7 +1644,10 @@ the go learning sequence will start from zero:
 6. garbage collection, allocation, escape analysis, latency, the race detector, benchmarks, and pprof
 7. implement the Meshlet coordinator protocol and compare behavior, failure handling, and performance with the rust version
 
-we will not mix go into the repository merely for syntax practice. the second coordinator becomes worthwhile when interoperability and control-plane concurrency are real learning goals.
+we will not rewrite the rust packet data path in go merely for syntax practice.
+the launcher teaches operating-system process boundaries; the later second
+coordinator becomes worthwhile when interoperability and control-plane
+concurrency are real learning goals.
 
 
 level 4-7 networking principles

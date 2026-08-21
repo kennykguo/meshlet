@@ -1,3 +1,8 @@
+//! Long-term node identities, public-key authorization files, and hex encoding.
+//!
+//! Ed25519 private keys sign messages; authorization files map stable node IDs
+//! to the public keys used by coordinator and peer-handshake verification.
+
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -15,19 +20,27 @@ pub struct Identity {
 }
 
 impl Identity {
+    /// Returns the stable node name stored beside this signing key.
+    /// Called by authenticated coordinator clients and secure-handshake roles.
     pub fn node_id(&self) -> &str {
         &self.node_id
     }
 
+    /// Produces an Ed25519 signature over the exact supplied bytes.
+    /// Called by authenticated registration, peer handshakes, and identity tests.
     pub fn sign(&self, message: &[u8]) -> Signature {
         self.signing_key.sign(message)
     }
 
+    /// Derives the public verifying key corresponding to this test identity.
+    /// Called only by coordinator and handshake test-fixture builders.
     #[cfg(test)]
     pub fn verifying_key(&self) -> VerifyingKey {
         self.signing_key.verifying_key()
     }
 
+    /// Constructs a deterministic identity from fixed secret bytes for tests.
+    /// Called only by identity, coordinator, and handshake unit tests.
     #[cfg(test)]
     pub fn from_secret_bytes(node_id: &str, secret: [u8; 32]) -> Self {
         Self {
@@ -42,6 +55,8 @@ pub struct Authorizations {
 }
 
 impl Authorizations {
+    /// Parses a file that maps authorized node IDs to Ed25519 public keys.
+    /// Called when authenticated coordinator and peer-handshake commands start.
     pub fn load(path: &str) -> Result<Self, String> {
         let contents = fs::read_to_string(path)
             .map_err(|error| format!("failed to read authorization file '{path}': {error}"))?;
@@ -93,14 +108,20 @@ impl Authorizations {
         Ok(Self { keys })
     }
 
+    /// Looks up the public key authorized for one node ID.
+    /// Called by coordinator challenge handling and handshake signature checks.
     pub fn get(&self, node_id: &str) -> Option<&VerifyingKey> {
         self.keys.get(node_id)
     }
 
+    /// Returns the number of authorized node IDs in this set.
+    /// Called by the authenticated coordinator server for startup output.
     pub fn len(&self) -> usize {
         self.keys.len()
     }
 
+    /// Builds a one-node authorization set for deterministic tests.
+    /// Called only by coordinator and handshake test-fixture builders.
     #[cfg(test)]
     pub fn from_key(node_id: &str, verifying_key: VerifyingKey) -> Self {
         Self {
@@ -109,6 +130,8 @@ impl Authorizations {
     }
 }
 
+/// Generates a new Ed25519 identity and writes separate private and public files.
+/// Called by `main` for the `identity-generate` command.
 pub fn generate(node_id: &str, private_path: &str, public_path: &str) -> Result<(), String> {
     if !crate::coordinator::valid_node_id(node_id) {
         return Err("node ID must use 1-64 ASCII letters, digits, '.', '-' or '_'".into());
@@ -118,6 +141,7 @@ pub fn generate(node_id: &str, private_path: &str, public_path: &str) -> Result<
     }
 
     let mut secret = [0_u8; 32];
+    // `getrandom` obtains cryptographic randomness directly from the OS.
     getrandom::fill(&mut secret)
         .map_err(|error| format!("operating system failed to generate a secret key: {error}"))?;
     let signing_key = SigningKey::from_bytes(&secret);
@@ -147,6 +171,8 @@ pub fn generate(node_id: &str, private_path: &str, public_path: &str) -> Result<
     Ok(())
 }
 
+/// Parses a private identity file into a node ID and Ed25519 signing key.
+/// Called by authenticated coordinator clients and both secure-handshake roles.
 pub fn load_identity(path: &str) -> Result<Identity, String> {
     let contents = fs::read_to_string(path)
         .map_err(|error| format!("failed to read identity file '{path}': {error}"))?;
@@ -171,6 +197,8 @@ pub fn load_identity(path: &str) -> Result<Identity, String> {
     })
 }
 
+/// Creates, writes, and synchronizes a new file without overwriting an old one.
+/// Called by `generate` for private and public identity material.
 fn write_new(path: &str, contents: &[u8], mode: u32) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .write(true)
@@ -184,6 +212,8 @@ fn write_new(path: &str, contents: &[u8], mode: u32) -> Result<(), String> {
         .map_err(|error| format!("failed to sync '{path}': {error}"))
 }
 
+/// Encodes arbitrary bytes as lowercase hexadecimal text.
+/// Called by identity files and every text-based authenticated wire message.
 pub fn encode_hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(bytes.len() * 2);
@@ -196,6 +226,8 @@ pub fn encode_hex(bytes: &[u8]) -> String {
     encoded
 }
 
+/// Decodes exactly `N` bytes from a fixed-length hexadecimal string.
+/// Called by identity/authorization parsers and authenticated protocol parsers.
 pub fn decode_hex_array<const N: usize>(encoded: &str) -> Result<[u8; N], String> {
     if encoded.len() != N * 2 {
         return Err(format!("expected {} hexadecimal characters", N * 2));
@@ -211,6 +243,8 @@ pub fn decode_hex_array<const N: usize>(encoded: &str) -> Result<[u8; N], String
     Ok(decoded)
 }
 
+/// Converts one ASCII hexadecimal digit into its numeric four-bit value.
+/// Called twice per output byte by `decode_hex_array`.
 fn decode_nibble(byte: u8) -> Result<u8, String> {
     match byte {
         b'0'..=b'9' => Ok(byte - b'0'),
@@ -227,6 +261,8 @@ fn decode_nibble(byte: u8) -> Result<u8, String> {
 mod tests {
     use super::*;
 
+    /// Verifies that hexadecimal encoding and fixed-size decoding round-trip bytes.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn hex_round_trip() {
         let bytes = [0x00, 0x12, 0xab, 0xff];
@@ -234,6 +270,8 @@ mod tests {
         assert_eq!(decode_hex_array::<4>("0012ABff"), Ok(bytes));
     }
 
+    /// Verifies that an identity's public key accepts its signature but not tampering.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn identity_signs_with_corresponding_public_key() {
         let identity = Identity::from_secret_bytes("mesh-a", [7_u8; 32]);

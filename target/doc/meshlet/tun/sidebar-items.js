@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["IFF_NO_PI","IFF_TUN","MAX_UDP_PAYLOAD_BYTES","TUNSETIFF","TUN_DEVICE_PATH"],"fn":["open_tun","parse_ipv4","require_transportable_packet","run_one_exchange"],"struct":["Ipv4Summary"]};

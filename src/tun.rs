@@ -20,6 +20,8 @@ struct Ipv4Summary {
     total_length: usize,
 }
 
+/// Moves one IPv4 packet from TUN to UDP and one reply from UDP back to TUN.
+/// Called by `main` for the `tun-udp-one` learning command on each peer.
 pub fn run_one_exchange(tun_name: &str, bind_address: &str, peer_address: &str) {
     let tun = open_tun(tun_name)
         .unwrap_or_else(|error| panic!("failed to attach to TUN interface '{tun_name}': {error}"));
@@ -33,6 +35,8 @@ pub fn run_one_exchange(tun_name: &str, bind_address: &str, peer_address: &str) 
     println!("UDP transport peer: {}", socket.peer_addr().unwrap());
     println!("waiting for one IPv4 packet in each direction");
 
+    // Cloning descriptors lets two blocking directions progress concurrently;
+    // both descriptors still refer to the same kernel TUN interface/socket.
     let mut tun_reader = tun.try_clone().expect("failed to clone TUN descriptor");
     let outbound_socket = socket
         .try_clone()
@@ -87,6 +91,8 @@ pub fn run_one_exchange(tun_name: &str, bind_address: &str, peer_address: &str) 
     inbound.join().expect("UDP-to-TUN worker panicked");
 }
 
+/// Opens `/dev/net/tun` and attaches the descriptor to a named layer-3 interface.
+/// Called once by `run_one_exchange` before its two packet workers start.
 fn open_tun(name: &str) -> io::Result<File> {
     if name.is_empty() || name.len() >= libc::IFNAMSIZ || !name.is_ascii() {
         return Err(io::Error::new(
@@ -122,6 +128,8 @@ fn open_tun(name: &str) -> io::Result<File> {
     }
 }
 
+/// Rejects an inner packet too large to fit in one maximum-size UDP payload.
+/// Called in both directions by `run_one_exchange` before transport or injection.
 fn require_transportable_packet(packet: &[u8]) -> Result<(), String> {
     if packet.len() > MAX_UDP_PAYLOAD_BYTES {
         Err(format!(
@@ -132,6 +140,8 @@ fn require_transportable_packet(packet: &[u8]) -> Result<(), String> {
     }
 }
 
+/// Validates the needed IPv4 header fields and extracts a printable summary.
+/// Called by both TUN workers and IPv4 parser unit tests.
 fn parse_ipv4(packet: &[u8]) -> Result<Ipv4Summary, String> {
     if packet.len() < 20 {
         return Err("packet is shorter than the minimum 20-byte IPv4 header".into());
@@ -164,6 +174,8 @@ fn parse_ipv4(packet: &[u8]) -> Result<Ipv4Summary, String> {
 mod tests {
     use super::*;
 
+    /// Verifies extraction of source, destination, protocol, and total length.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn parses_the_fields_needed_to_observe_an_ipv4_packet() {
         let mut packet = [0_u8; 28];
@@ -184,6 +196,8 @@ mod tests {
         );
     }
 
+    /// Verifies that the parser rejects an IPv6 version nibble.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn rejects_a_non_ipv4_packet() {
         let mut packet = [0_u8; 40];

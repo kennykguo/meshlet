@@ -62,17 +62,23 @@ enum ClientAttemptError {
 }
 
 impl ClientAttemptError {
+    /// Returns the diagnostic text carried by any client-attempt error category.
+    /// Called by direct, automatic-fallback, and relay failure reporting.
     fn message(&self) -> &str {
         match self {
             Self::Local(message) | Self::Unreachable(message) | Self::Rejected(message) => message,
         }
     }
 
+    /// Reports whether an error represents reachability rather than local/rejected state.
+    /// Called by automatic path selection and its fallback-policy test.
     fn permits_fallback(&self) -> bool {
         matches!(self, Self::Unreachable(_))
     }
 }
 
+/// Authenticates one client, derives keys, and completes one encrypted UDP echo.
+/// Called by `main` for the `secure-echo-server` command.
 pub fn run_secure_echo_server(bind_address: &str, identity_path: &str, authorization_path: &str) {
     let identity = identity::load_identity(identity_path)
         .unwrap_or_else(|error| panic!("failed to load server identity: {error}"));
@@ -171,6 +177,8 @@ pub fn run_secure_echo_server(bind_address: &str, identity_path: &str, authoriza
     );
 }
 
+/// Establishes one authenticated direct session and completes an encrypted echo.
+/// Called by `main` for the `secure-echo-client` command.
 pub fn run_secure_echo_client(
     bind_address: &str,
     server_address: &str,
@@ -193,6 +201,8 @@ pub fn run_secure_echo_client(
     complete_client_exchange(session, identity.node_id(), peer_node_id);
 }
 
+/// Tries a direct session, falls back on reachability failure, then exchanges data.
+/// Called by `main` for the `secure-echo-client-auto` command.
 pub fn run_secure_echo_client_auto(
     bind_address: &str,
     direct_address: &str,
@@ -248,6 +258,8 @@ pub fn run_secure_echo_client_auto(
     complete_client_exchange(session, identity.node_id(), peer_node_id);
 }
 
+/// Loads the client's private identity and the peer public-key authorization set.
+/// Called by both direct and automatic secure-echo client entry points.
 fn load_client_material(
     identity_path: &str,
     authorization_path: &str,
@@ -259,6 +271,8 @@ fn load_client_material(
     (identity, authorizations)
 }
 
+/// Performs the client half of one authenticated key-exchange round trip.
+/// Called by direct secure echo and by each automatic path candidate.
 fn establish_client_session(
     bind_address: &str,
     peer_address: &str,
@@ -337,6 +351,8 @@ fn establish_client_session(
     })
 }
 
+/// Sends one encrypted request and validates the peer's encrypted echo.
+/// Called after session establishment by both secure-echo client entry points.
 fn complete_client_exchange(
     session: ClientSession,
     local_node_id: &str,
@@ -395,6 +411,8 @@ fn complete_client_exchange(
     );
 }
 
+/// Serializes a signed client hello into the text learning wire format.
+/// Called by client session establishment and the complete-handshake test.
 fn encode_client_hello(hello: &ClientHello) -> String {
     format!(
         "{PROTOCOL_VERSION} CLIENT_HELLO {} {} {} {}",
@@ -405,6 +423,8 @@ fn encode_client_hello(hello: &ClientHello) -> String {
     )
 }
 
+/// Parses and validates a text client hello into typed handshake fields.
+/// Called by the secure-echo server and the complete-handshake test.
 fn parse_client_hello(message: &str) -> Result<ClientHello, String> {
     let fields: Vec<_> = message.split_ascii_whitespace().collect();
     let [
@@ -431,6 +451,8 @@ fn parse_client_hello(message: &str) -> Result<ClientHello, String> {
     })
 }
 
+/// Serializes a signed server hello into the text learning wire format.
+/// Called by the secure-echo server and the complete-handshake test.
 fn encode_server_hello(hello: &ServerHello) -> String {
     format!(
         "{PROTOCOL_VERSION} SERVER_HELLO {} {} {} {} {}",
@@ -442,6 +464,8 @@ fn encode_server_hello(hello: &ServerHello) -> String {
     )
 }
 
+/// Parses and validates a text server hello into typed handshake fields.
+/// Called by client session establishment and the complete-handshake test.
 fn parse_server_hello(message: &str) -> Result<ServerHello, String> {
     let fields: Vec<_> = message.split_ascii_whitespace().collect();
     let [
@@ -475,6 +499,8 @@ fn parse_server_hello(message: &str) -> Result<ServerHello, String> {
     })
 }
 
+/// Builds canonical bytes binding the client identity, peer, and exchange key.
+/// Called when creating/verifying client signatures and building the transcript.
 fn client_signing_message(
     initiator_id: &str,
     responder_id: &str,
@@ -487,6 +513,8 @@ fn client_signing_message(
     .into_bytes()
 }
 
+/// Builds canonical bytes binding both identities, keys, and the client signature.
+/// Called when creating/verifying server signatures and building the transcript.
 fn server_signing_message(
     client: &ClientHello,
     server_exchange_public: &[u8; EXCHANGE_KEY_BYTES],
@@ -502,6 +530,8 @@ fn server_signing_message(
     .into_bytes()
 }
 
+/// Concatenates both canonical signed messages and signatures into session context.
+/// Called by both peers before key derivation and by handshake tests.
 fn handshake_transcript(client: &ClientHello, server: &ServerHello) -> Vec<u8> {
     let client_message = client_signing_message(
         &client.initiator_id,
@@ -518,11 +548,15 @@ fn handshake_transcript(client: &ClientHello, server: &ServerHello) -> Vec<u8> {
     transcript
 }
 
+/// Expands one safe X25519 shared secret into distinct directional session keys.
+/// Called by both handshake roles and key-agreement unit tests.
 fn derive_session_keys(shared: &SharedSecret, transcript: &[u8]) -> Result<SessionKeys, String> {
     if !shared.was_contributory() {
         return Err("peer exchange key produced an unsafe all-zero shared secret".into());
     }
 
+    // Using the transcript hash as HKDF salt binds the resulting keys to this
+    // exact pair of authenticated handshake messages.
     let transcript_hash = Sha256::digest(transcript);
     let hkdf = Hkdf::<Sha256>::new(Some(transcript_hash.as_slice()), shared.as_bytes());
     let mut client_to_server = [0_u8; SESSION_KEY_BYTES];
@@ -544,6 +578,8 @@ fn derive_session_keys(shared: &SharedSecret, transcript: &[u8]) -> Result<Sessi
     })
 }
 
+/// Checks that a server response echoes the initiating client's exact context.
+/// Called by client session establishment and the complete-handshake test.
 fn validate_server_hello(server: &ServerHello, client: &ClientHello) -> Result<(), String> {
     if server.initiator_id != client.initiator_id
         || server.responder_id != client.responder_id
@@ -554,6 +590,8 @@ fn validate_server_hello(server: &ServerHello, client: &ClientHello) -> Result<(
     Ok(())
 }
 
+/// Verifies a signature using the public key authorized for a node ID.
+/// Called by both handshake roles and the complete-handshake test.
 fn verify_signature(
     authorizations: &Authorizations,
     node_id: &str,
@@ -568,12 +606,16 @@ fn verify_signature(
         .map_err(|_| format!("signature from node '{node_id}' is invalid"))
 }
 
+/// Stops a client early when the expected peer lacks an authorized public key.
+/// Called by both secure-echo client entry points before network traffic.
 fn require_authorized(authorizations: &Authorizations, node_id: &str) {
     if authorizations.get(node_id).is_none() {
         panic!("node '{node_id}' has no authorized public key");
     }
 }
 
+/// Accepts only the exact handshake protocol version implemented here.
+/// Called by both hello parsers.
 fn require_version(version: &str) -> Result<(), String> {
     if version == PROTOCOL_VERSION {
         Ok(())
@@ -584,6 +626,8 @@ fn require_version(version: &str) -> Result<(), String> {
     }
 }
 
+/// Validates a handshake node ID using the coordinator's shared grammar.
+/// Called by both hello parsers for initiator and responder fields.
 fn validate_node_id(node_id: &str) -> Result<(), String> {
     if crate::coordinator::valid_node_id(node_id) {
         Ok(())
@@ -592,11 +636,15 @@ fn validate_node_id(node_id: &str) -> Result<(), String> {
     }
 }
 
+/// Converts fixed-length hexadecimal text into an Ed25519 signature value.
+/// Called by both hello parsers.
 fn parse_signature(encoded: &str) -> Result<Signature, String> {
     let bytes = identity::decode_hex_array::<SIGNATURE_BYTES>(encoded)?;
     Signature::try_from(bytes.as_slice()).map_err(|error| format!("invalid signature: {error}"))
 }
 
+/// Receives one bounded UTF-8 datagram and preserves its source endpoint.
+/// Called by the server for the unconnected client-hello socket.
 fn receive_from(socket: &UdpSocket, description: &str) -> (String, SocketAddr) {
     let mut buffer = [0_u8; MAX_DATAGRAM_BYTES + 1];
     let (bytes_received, source) = socket
@@ -610,11 +658,15 @@ fn receive_from(socket: &UdpSocket, description: &str) -> (String, SocketAddr) {
     (message.to_string(), source)
 }
 
+/// Receives bounded UTF-8 from a connected UDP peer while preserving errors.
+/// Called by client session establishment for the server hello.
 fn try_receive_connected(socket: &UdpSocket, description: &str) -> Result<String, String> {
     let bytes = try_receive_connected_bytes(socket, description)?;
     String::from_utf8(bytes).map_err(|error| format!("{description} is not UTF-8: {error}"))
 }
 
+/// Receives one bounded opaque datagram and preserves its source endpoint.
+/// Called by the server for the encrypted client request.
 fn receive_bytes_from(socket: &UdpSocket, description: &str) -> (Vec<u8>, SocketAddr) {
     let mut buffer = [0_u8; MAX_DATAGRAM_BYTES + 1];
     let (bytes_received, source) = socket
@@ -626,12 +678,16 @@ fn receive_bytes_from(socket: &UdpSocket, description: &str) -> (Vec<u8>, Socket
     (buffer[..bytes_received].to_vec(), source)
 }
 
+/// Receives bounded opaque bytes from a connected peer or panics descriptively.
+/// Called by the client encrypted-echo exchange.
 fn receive_connected_bytes(socket: &UdpSocket, description: &str) -> Vec<u8> {
     try_receive_connected_bytes(socket, description).unwrap_or_else(|error| {
         panic!("failed to receive {description} within two seconds: {error}")
     })
 }
 
+/// Receives bounded opaque bytes from a connected UDP peer as a `Result`.
+/// Called by both connected receive wrappers.
 fn try_receive_connected_bytes(socket: &UdpSocket, description: &str) -> Result<Vec<u8>, String> {
     let mut buffer = [0_u8; MAX_DATAGRAM_BYTES + 1];
     let bytes_received = socket
@@ -645,6 +701,8 @@ fn try_receive_connected_bytes(socket: &UdpSocket, description: &str) -> Result<
     Ok(buffer[..bytes_received].to_vec())
 }
 
+/// Prints authenticated peer, session identifier, and derived-key metadata.
+/// Called by both successful server and client handshake paths.
 fn print_success(
     role: &str,
     peer_node_id: &str,
@@ -670,6 +728,8 @@ fn print_success(
 mod tests {
     use super::*;
 
+    /// Verifies that only reachability failures permit relay fallback.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn fallback_is_only_allowed_for_reachability_failures() {
         let unreachable = ClientAttemptError::Unreachable("timed out".into());
@@ -681,6 +741,8 @@ mod tests {
         assert!(!rejected.permits_fallback());
     }
 
+    /// Verifies that X25519 peers derive equal but directionally distinct keys.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn both_peers_derive_the_same_directional_keys() {
         let client_secret = EphemeralSecret::random();
@@ -699,6 +761,8 @@ mod tests {
         assert_ne!(client_keys.client_to_server, client_keys.server_to_client);
     }
 
+    /// Verifies the complete encoded, signed, parsed, and derived handshake path.
+    /// Called automatically by Rust's test harness during `cargo test`.
     #[test]
     fn complete_authenticated_handshake_derives_matching_keys() {
         let client_identity = Identity::from_secret_bytes("mesh-a", [7_u8; 32]);

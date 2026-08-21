@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["AUTHENTICATION_TAG_BYTES","HEADER_BYTES","MAGIC"],"enum":["Direction"],"fn":["packet_header","packet_nonce"],"struct":["PacketReceiver","PacketSender"]};

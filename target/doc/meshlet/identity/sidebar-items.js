@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["PRIVATE_FILE_VERSION","PUBLIC_FILE_VERSION"],"fn":["decode_hex_array","decode_nibble","encode_hex","generate","load_identity","write_new"],"struct":["Authorizations","Identity"]};
