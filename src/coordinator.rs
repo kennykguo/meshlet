@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::Signature;
@@ -7,6 +7,7 @@ use ed25519_dalek::Signature;
 #[cfg(test)]
 use crate::identity::Identity;
 use crate::identity::{self, Authorizations};
+use crate::routing::{Ipv4Prefix, RouteRegistry};
 
 const PROTOCOL_VERSION: &str = "MESHLET/1";
 const AUTH_PROTOCOL_VERSION: &str = "MESHLET/2";
@@ -19,8 +20,21 @@ const CHALLENGE_LIFETIME: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Eq, PartialEq)]
 enum Request {
-    Register { node_id: String, lease: Duration },
-    Lookup { node_id: String },
+    Register {
+        node_id: String,
+        lease: Duration,
+    },
+    Lookup {
+        node_id: String,
+    },
+    AdvertiseRoute {
+        node_id: String,
+        prefix: Ipv4Prefix,
+        lease: Duration,
+    },
+    RouteLookup {
+        destination: Ipv4Addr,
+    },
 }
 
 #[derive(Debug)]
@@ -52,6 +66,19 @@ enum Response {
     },
     NotFound {
         node_id: String,
+    },
+    RouteAdvertised {
+        node_id: String,
+        prefix: Ipv4Prefix,
+        lease: Duration,
+    },
+    RouteFound {
+        destination: Ipv4Addr,
+        prefix: Ipv4Prefix,
+        node_id: String,
+    },
+    RouteNotFound {
+        destination: Ipv4Addr,
     },
     Error(String),
 }
@@ -122,6 +149,22 @@ impl Response {
             Self::NotFound { node_id } => {
                 format!("{PROTOCOL_VERSION} NOT_FOUND {node_id}")
             }
+            Self::RouteAdvertised {
+                node_id,
+                prefix,
+                lease,
+            } => format!(
+                "{PROTOCOL_VERSION} ROUTE_ADVERTISED {node_id} {prefix} {}",
+                lease.as_secs()
+            ),
+            Self::RouteFound {
+                destination,
+                prefix,
+                node_id,
+            } => format!("{PROTOCOL_VERSION} ROUTE_FOUND {destination} {prefix} {node_id}"),
+            Self::RouteNotFound { destination } => {
+                format!("{PROTOCOL_VERSION} ROUTE_NOT_FOUND {destination}")
+            }
             Self::Error(message) => format!("{PROTOCOL_VERSION} ERROR {message}"),
         }
     }
@@ -136,6 +179,7 @@ struct Registration {
 #[derive(Default)]
 struct Registry {
     registrations: HashMap<String, Registration>,
+    routes: RouteRegistry,
 }
 
 impl Registry {
@@ -168,6 +212,26 @@ impl Registry {
                     observed_endpoint: registration.observed_endpoint,
                 },
                 None => Response::NotFound { node_id },
+            },
+            Request::AdvertiseRoute {
+                node_id,
+                prefix,
+                lease,
+            } => {
+                self.routes.advertise(&node_id, prefix, lease, now);
+                Response::RouteAdvertised {
+                    node_id,
+                    prefix,
+                    lease,
+                }
+            }
+            Request::RouteLookup { destination } => match self.routes.lookup(destination, now) {
+                Some(route) => Response::RouteFound {
+                    destination,
+                    prefix: route.prefix,
+                    node_id: route.node_id,
+                },
+                None => Response::RouteNotFound { destination },
             },
         }
     }
@@ -337,11 +401,29 @@ fn parse_request(message: &[u8]) -> Result<Request, String> {
                 node_id: (*node_id).to_string(),
             })
         }
+        [version, "ADVERTISE_ROUTE", node_id, prefix, lease_seconds]
+            if *version == PROTOCOL_VERSION =>
+        {
+            validate_node_id(node_id)?;
+            let prefix = prefix.parse()?;
+            let lease = parse_lease(lease_seconds)?;
+            Ok(Request::AdvertiseRoute {
+                node_id: (*node_id).to_string(),
+                prefix,
+                lease,
+            })
+        }
+        [version, "ROUTE_LOOKUP", destination] if *version == PROTOCOL_VERSION => {
+            let destination = destination
+                .parse()
+                .map_err(|_| "route destination must be an IPv4 address".to_string())?;
+            Ok(Request::RouteLookup { destination })
+        }
         [version, ..] if *version != PROTOCOL_VERSION => {
             Err(format!("unsupported protocol version '{version}'"))
         }
         _ => Err(
-            "expected 'MESHLET/1 REGISTER NODE_ID LEASE_SECONDS' or 'MESHLET/1 LOOKUP NODE_ID'"
+            "expected a node registration, node lookup, route advertisement, or route lookup"
                 .into(),
         ),
     }
@@ -625,6 +707,34 @@ pub fn lookup_authenticated(bind_address: &str, server_address: &str, node_id: &
     exchange(bind_address, server_address, &request);
 }
 
+pub fn advertise_route(
+    bind_address: &str,
+    server_address: &str,
+    node_id: &str,
+    prefix: &str,
+    lease_seconds: u64,
+) {
+    validate_node_id(node_id).unwrap_or_else(|error| panic!("invalid node ID: {error}"));
+    let prefix: Ipv4Prefix = prefix
+        .parse()
+        .unwrap_or_else(|error| panic!("invalid advertised prefix: {error}"));
+    let lease = parse_lease(&lease_seconds.to_string())
+        .unwrap_or_else(|error| panic!("invalid route lease: {error}"));
+    let request = format!(
+        "{PROTOCOL_VERSION} ADVERTISE_ROUTE {node_id} {prefix} {}",
+        lease.as_secs()
+    );
+    exchange(bind_address, server_address, &request);
+}
+
+pub fn route_lookup(bind_address: &str, server_address: &str, destination: &str) {
+    let destination: Ipv4Addr = destination
+        .parse()
+        .unwrap_or_else(|_| panic!("route destination must be an IPv4 address"));
+    let request = format!("{PROTOCOL_VERSION} ROUTE_LOOKUP {destination}");
+    exchange(bind_address, server_address, &request);
+}
+
 fn receive_connected(socket: &UdpSocket, description: &str) -> String {
     let mut response = [0_u8; MAX_DATAGRAM_BYTES];
     let bytes_received = socket.recv(&mut response).unwrap_or_else(|error| {
@@ -669,6 +779,45 @@ mod tests {
         let identity = Identity::from_secret_bytes("mesh-a", [7_u8; 32]);
         let authorizations = Authorizations::from_key("mesh-a", identity.verifying_key());
         (identity, AuthenticatedCoordinator::new(authorizations))
+    }
+
+    #[test]
+    fn advertised_route_is_selected_for_its_destination() {
+        let now = Instant::now();
+        let prefix: Ipv4Prefix = "10.30.0.0/24".parse().unwrap();
+        let lease = Duration::from_secs(30);
+        let mut registry = Registry::default();
+
+        assert_eq!(
+            registry.handle(
+                Request::AdvertiseRoute {
+                    node_id: "mesh-b".into(),
+                    prefix,
+                    lease,
+                },
+                ENDPOINT_B,
+                now,
+            ),
+            Response::RouteAdvertised {
+                node_id: "mesh-b".into(),
+                prefix,
+                lease,
+            }
+        );
+        assert_eq!(
+            registry.handle(
+                Request::RouteLookup {
+                    destination: Ipv4Addr::new(10, 30, 0, 2),
+                },
+                ENDPOINT_A,
+                now,
+            ),
+            Response::RouteFound {
+                destination: Ipv4Addr::new(10, 30, 0, 2),
+                prefix,
+                node_id: "mesh-b".into(),
+            }
+        );
     }
 
     #[test]

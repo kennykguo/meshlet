@@ -3,6 +3,7 @@ mod firewall;
 mod handshake;
 mod identity;
 mod relay;
+mod routing;
 mod secure_packet;
 mod tun;
 
@@ -370,6 +371,10 @@ fn main() {
 
             coordinator::run_authenticated_server(&bind_address, &authorization_path);
         }
+        "coordinator-route-server" => {
+            let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:9000".to_string());
+            coordinator::run_server(&bind_address);
+        }
         "coordinator-register-auth" => {
             let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:0".to_string());
             let server_address = args.next().unwrap_or_else(|| "127.0.0.1:9000".to_string());
@@ -400,6 +405,34 @@ fn main() {
             let node_id = args.next().unwrap_or_else(|| "mesh-a".to_string());
 
             coordinator::lookup_authenticated(&bind_address, &server_address, &node_id);
+        }
+        "coordinator-advertise-route" => {
+            let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:0".to_string());
+            let server_address = args.next().unwrap_or_else(|| "127.0.0.1:9000".to_string());
+            let node_id = args.next().unwrap_or_else(|| "mesh-b".to_string());
+            let prefix = args.next().unwrap_or_else(|| "10.30.0.0/24".to_string());
+            let lease_seconds = args
+                .next()
+                .map(|value| {
+                    value
+                        .parse()
+                        .expect("LEASE_SECONDS must be a positive integer")
+                })
+                .unwrap_or(120);
+            coordinator::advertise_route(
+                &bind_address,
+                &server_address,
+                &node_id,
+                &prefix,
+                lease_seconds,
+            );
+        }
+        "coordinator-route-lookup" => {
+            let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:0".to_string());
+            let server_address = args.next().unwrap_or_else(|| "127.0.0.1:9000".to_string());
+            let destination = args.next().unwrap_or_else(|| "10.30.0.2".to_string());
+
+            coordinator::route_lookup(&bind_address, &server_address, &destination);
         }
         "secure-echo-server" => {
             let bind_address = args.next().unwrap_or_else(|| "127.0.0.1:7000".to_string());
@@ -484,8 +517,11 @@ fn print_usage() {
   meshlet coordinator-register [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID] [LEASE_SECONDS]
   meshlet coordinator-lookup [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID]
   meshlet coordinator-server-auth [BIND_ADDRESS] [AUTHORIZATION_PATH]
+  meshlet coordinator-route-server [BIND_ADDRESS]
   meshlet coordinator-register-auth [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID] [LEASE_SECONDS] [IDENTITY_PATH]
   meshlet coordinator-lookup-auth [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID]
+  meshlet coordinator-advertise-route [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID] [PREFIX] [LEASE_SECONDS]
+  meshlet coordinator-route-lookup [BIND_ADDRESS] [SERVER_ADDRESS] [DESTINATION]
   meshlet secure-echo-server [BIND_ADDRESS] [IDENTITY_PATH] [AUTHORIZATION_PATH]
   meshlet secure-echo-client [BIND_ADDRESS] [SERVER_ADDRESS] [IDENTITY_PATH] [PEER_NODE_ID] [AUTHORIZATION_PATH]
   meshlet secure-echo-client-auto [BIND_ADDRESS] [DIRECT_ADDRESS] [RELAY_ADDRESS] [IDENTITY_PATH] [PEER_NODE_ID] [AUTHORIZATION_PATH]

@@ -46,13 +46,14 @@ completed:
     one-session opaque udp relay carrying the encrypted exchange
     automatic direct-first path selection with relay fallback
     one ordinary ipv4 echo request and reply transported through tun and udp
+    one private subnet reached through mesh-b as a subnet router
+    route advertisement and longest-prefix peer selection
 
 implemented, awaiting your live observation:
     coordinator endpoint lookup and lease expiration
-    one private subnet reached through mesh-b as a subnet router
 
 after that:
-    authorized route advertisements and longest-prefix peer selection
+    containers as isolated processes
 
 fundamentals-first roadmap
 
@@ -66,7 +67,7 @@ stage	fundamental	implementation evidence
 7	identity, key agreement, derivation, and authenticated encryption	authenticated handshake trace and encrypted echo
 8	direct connectivity and relay fallback	probe state machine plus direct/relay traces
 9	tun layer-3 overlay	one ordinary ip packet transported through userspace
-10	subnets, route advertisement, and longest-prefix matching	authorized prefix routed through a peer
+10	subnets, route advertisement, and longest-prefix matching	advertised prefix mapped to a peer
 11	containers as isolated processes	namespace/cgroup objects behind one container
 12	wireshark as structured packet evidence	pcap with layer and timing annotations
 13	latency, tail behavior, queueing, and throughput	loopback and routed/nat rtt distributions
@@ -1141,8 +1142,79 @@ because mesh-b routed the inner packet once. mesh-r routes the outer UDP packet
 but does not modify the encapsulated inner packet's TTL.
 
 this proves the forwarding mechanism. the next step is the control decision:
-represent advertised prefixes, authorize them, and select the most specific
-matching peer using longest-prefix matching.
+represent advertised prefixes and select the most specific matching peer using
+longest-prefix matching.
+
+route-advertisement experiment
+
+the data path already knows how to carry and forward an IP packet. this
+experiment adds the control-plane decision that happens before that data path
+is used:
+
+1. a node sends a claim that it can route a prefix.
+2. the coordinator stores the claim until its lease expires.
+3. `mesh-a` asks which node should receive a particular destination.
+
+this learning path is intentionally unauthenticated. in production, the
+coordinator would authenticate the node making a route claim and apply policy
+to the prefixes it may advertise. the earlier authentication and encryption
+experiments remain in the project; they are simply not part of this stage.
+
+start the route-aware coordinator in `mesh-c`:
+
+```sh
+sudo ip netns exec mesh-c target/release/meshlet \
+  coordinator-route-server \
+  203.0.113.10:9001
+```
+
+`ip netns exec mesh-c` runs the process with mesh-c's isolated network stack.
+The remaining argument selects the coordinator's UDP endpoint.
+
+while it remains running, publish the real subnet route from `mesh-b`:
+
+```sh
+sudo ip netns exec mesh-b target/release/meshlet \
+  coordinator-advertise-route \
+  192.0.2.20:0 203.0.113.10:9001 \
+  mesh-b 10.30.0.0/24 120
+```
+
+`192.0.2.20:0` means bind locally to that IP address and let Linux choose an
+unused UDP source port. `120` is the lease lifetime in seconds.
+
+before those leases expire, ask from `mesh-a` which node should receive a
+packet addressed to `10.30.0.2`:
+
+```sh
+sudo ip netns exec mesh-a target/release/meshlet \
+  coordinator-route-lookup \
+  10.10.0.2:0 203.0.113.10:9001 \
+  10.30.0.2
+```
+
+the expected decision is:
+
+```text
+MESHLET/1 ROUTE_FOUND 10.30.0.2 10.30.0.0/24 mesh-b
+```
+
+the lookup still uses longest-prefix matching. overlapping-prefix selection is
+covered by the Rust tests rather than by an artificial learner command. this
+control plane returns `prefix -> node`. endpoint lookup, tunnel setup, and
+installing a Linux route are separate actions; they are not hidden inside this
+command.
+
+observed result:
+
+```text
+MESHLET/1 ROUTE_ADVERTISED mesh-b 10.30.0.0/24 120
+MESHLET/1 ROUTE_FOUND 10.30.0.2 10.30.0.0/24 mesh-b
+```
+
+mesh-a's lookup reached the coordinator from `203.0.113.1`, the public source
+address assigned by mesh-r's NAT. the coordinator selected mesh-b but did not
+send a data packet or change either node's Linux routing table.
 
 stage 11: containers from first principles
 
@@ -1345,3 +1417,6 @@ the go learning sequence will start from zero:
 7. implement the Meshlet coordinator protocol and compare behavior, failure handling, and performance with the rust version
 
 we will not mix go into the repository merely for syntax practice. the second coordinator becomes worthwhile when interoperability and control-plane concurrency are real learning goals.
+
+
+level 4-7 networking principles
