@@ -1,9 +1,0 @@
-(function() {
-    const implementors = Object.fromEntries([["meshlet",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.97.1/core/hash/trait.Hash.html\" title=\"trait core::hash::Hash\">Hash</a> for <a class=\"enum\" href=\"meshlet/firewall/enum.TransportProtocol.html\" title=\"enum meshlet::firewall::TransportProtocol\">TransportProtocol</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.97.1/core/hash/trait.Hash.html\" title=\"trait core::hash::Hash\">Hash</a> for <a class=\"struct\" href=\"meshlet/firewall/struct.Endpoint.html\" title=\"struct meshlet::firewall::Endpoint\">Endpoint</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.97.1/core/hash/trait.Hash.html\" title=\"trait core::hash::Hash\">Hash</a> for <a class=\"struct\" href=\"meshlet/firewall/struct.FlowKey.html\" title=\"struct meshlet::firewall::FlowKey\">FlowKey</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.97.1/core/hash/trait.Hash.html\" title=\"trait core::hash::Hash\">Hash</a> for <a class=\"struct\" href=\"meshlet/routing/struct.Ipv4Prefix.html\" title=\"struct meshlet::routing::Ipv4Prefix\">Ipv4Prefix</a>",0]]]]);
-    if (window.register_implementors) {
-        window.register_implementors(implementors);
-    } else {
-        window.pending_implementors = implementors;
-    }
-})()
-//{"start":59,"fragment_lengths":[1111]}

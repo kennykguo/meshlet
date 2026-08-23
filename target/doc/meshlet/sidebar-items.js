@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["DEFAULT_RTT_SAMPLES","RTT_WARMUP_SAMPLES"],"fn":["firewall_demo","main","percentile","print_latency","print_usage","tcp_client","tcp_server","udp_bench_server","udp_client","udp_rtt_client","udp_server","verdict"],"mod":["coordinator","firewall","handshake","identity","relay","routing","secure_packet","tun"]};
