@@ -11,11 +11,15 @@ import (
 const childEnvironment = "TOY_CONTAINER_CHILD"
 const rootfsEnvironment = "TOY_CONTAINER_ROOTFS"
 const cgroupEnvironment = "TOY_CONTAINER_CGROUP"
+const memoryLimitBytes = "67108864" // 64 MiB
+const taskLimit = "32"
 
-func main() { // no host process, host process just runs the child process
-	// if the child environment is set, run the child function
+// main selects either the outer-launcher stage or the namespace-init stage.
+func main() {
+	// The launcher starts a second copy of this executable with this marker.
+	// That copy is namespace-init: PID 1 inside the new PID namespace.
 	if os.Getenv(childEnvironment) == "1" {
-		if err := runNamespaceChild( // run by the child process
+		if err := runNamespaceChild(
 			os.Getenv(rootfsEnvironment),
 			os.Args[1:],
 		); err != nil {
@@ -25,7 +29,6 @@ func main() { // no host process, host process just runs the child process
 		return
 	}
 
-	// if the arguments are not valid, print the usage and exit
 	if len(os.Args) < 4 || os.Args[1] != "--rootfs" {
 		fmt.Fprintln(
 			os.Stderr,
@@ -45,13 +48,13 @@ func main() { // no host process, host process just runs the child process
 	fmt.Println("program:", arguments[0])
 	fmt.Println("program arguments:", arguments[1:])
 
-	if err := runOuter(rootfs, arguments); err != nil {
+	if err := runOuter(rootfs, arguments); err != nil { // host process runs this
 		fmt.Fprintln(os.Stderr, "outer launcher failed:", err)
 		os.Exit(1)
 	}
 }
 
-// launches the new process in a new namespace
+// runOuter creates the resource group, launches namespace-init, and reports its resource use.
 func runOuter(rootfs string, arguments []string) error {
 	self, err := os.Executable()
 	if err != nil {
@@ -63,6 +66,9 @@ func runOuter(rootfs string, arguments []string) error {
 		return fmt.Errorf("create cgroup (run this launcher with sudo): %w", err)
 	}
 	defer os.Remove(cgroup)
+	if err := configureCgroup(cgroup); err != nil {
+		return err
+	}
 
 	command := exec.Command(self, arguments...)
 	command.Env = append(
@@ -71,10 +77,9 @@ func runOuter(rootfs string, arguments []string) error {
 		rootfsEnvironment+"="+rootfs,
 		cgroupEnvironment+"="+cgroup,
 	)
+	// SysProcAttr passes Linux-specific process-creation options through Go.
+	// These flags give the new process separate hostname, PID, and mount views.
 	command.SysProcAttr = &syscall.SysProcAttr{
-		// CLONE_NEWUTS: create a new hostname for the container
-		// CLONE_NEWPID: create a new PID namespace for the container
-		// CLONE_NEWNS: create a new mount namespace for the container
 		Cloneflags: syscall.CLONE_NEWUTS |
 			syscall.CLONE_NEWPID |
 			syscall.CLONE_NEWNS,
@@ -95,7 +100,7 @@ func runOuter(rootfs string, arguments []string) error {
 	return waitErr
 }
 
-// child runs this
+// runNamespaceChild prepares the isolated environment and runs the requested application inside it.
 func runNamespaceChild(rootfs string, arguments []string) error {
 	cgroup := os.Getenv(cgroupEnvironment)
 	if rootfs == "" {
@@ -118,8 +123,8 @@ func runNamespaceChild(rootfs string, arguments []string) error {
 		return fmt.Errorf("remove internal cgroup path: %w", err)
 	}
 
-	// Writing 0 moves the writing process into this cgroup. The application
-	// started later inherits the same cgroup membership.
+	// cgroup.procs is a kernel control file, not stored data. Writing 0 attaches
+	// this process; applications it starts inherit the same resource group.
 	if err := os.WriteFile(
 		filepath.Join(cgroup, "cgroup.procs"),
 		[]byte("0"),
@@ -130,7 +135,8 @@ func runNamespaceChild(rootfs string, arguments []string) error {
 
 	fmt.Println("namespace init PID inside namespace:", os.Getpid())
 
-	// make child mounts private
+	// Prevent later mount changes in this namespace from propagating back into
+	// the outer mount view inherited when this process was created.
 	if err := syscall.Mount(
 		"",
 		"/",
@@ -141,7 +147,7 @@ func runNamespaceChild(rootfs string, arguments []string) error {
 		return fmt.Errorf("make child mounts private: %w", err)
 	}
 
-	// change child root to selected root filesystem
+	// Chroot changes the starting point for absolute path lookup: rootfs becomes /.
 	if err := syscall.Chroot(rootfs); err != nil {
 		return fmt.Errorf("change child root to %s: %w", rootfs, err)
 	}
@@ -150,17 +156,16 @@ func runNamespaceChild(rootfs string, arguments []string) error {
 	}
 	fmt.Println("child root changed to selected root filesystem")
 
-	// mount child proc filesystem
+	// procfs is a kernel-generated filesystem. Mounted here, /proc describes
+	// the processes visible through this process's PID namespace.
 	if err := syscall.Mount("proc", "/proc", "proc", 0, ""); err != nil {
 		return fmt.Errorf("mount child proc filesystem: %w", err)
 	}
 	fmt.Println("child proc filesystem mounted at /proc")
 
-	// run the application
 	application := exec.Command(arguments[0], arguments[1:]...)
 	connectTerminal(application)
 
-	// start the application
 	if err := application.Start(); err != nil {
 		return fmt.Errorf("start application: %w", err)
 	}
@@ -169,6 +174,30 @@ func runNamespaceChild(rootfs string, arguments []string) error {
 	return application.Wait()
 }
 
+// configureCgroup writes the memory and task ceilings enforced for the container process tree.
+func configureCgroup(cgroup string) error {
+	for _, limit := range []struct {
+		label string
+		file  string
+		value string
+	}{
+		{label: "memory", file: "memory.max", value: memoryLimitBytes},
+		{label: "tasks", file: "pids.max", value: taskLimit},
+	} {
+		// Files under /sys/fs/cgroup are the kernel's configuration interface.
+		if err := os.WriteFile(
+			filepath.Join(cgroup, limit.file),
+			[]byte(limit.value),
+			0o644,
+		); err != nil {
+			return fmt.Errorf("set cgroup %s limit: %w", limit.label, err)
+		}
+		fmt.Printf("cgroup %s limit: %s\n", limit.label, limit.value)
+	}
+	return nil
+}
+
+// printCgroupAccounting prints the CPU, memory, and task usage accumulated by the process tree.
 func printCgroupAccounting(cgroup string) error {
 	for _, metric := range []struct {
 		label string
@@ -187,6 +216,7 @@ func printCgroupAccounting(cgroup string) error {
 	return nil
 }
 
+// connectTerminal lets a child use the launcher's keyboard and terminal output.
 func connectTerminal(command *exec.Cmd) {
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout
