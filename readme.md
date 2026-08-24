@@ -44,21 +44,32 @@ sudo ./toy-container --rootfs .rootfs /bin/sh -c \
 
 The numbered stages below contain the focused commands for each mechanism.
 
+## Guide
+
+- [Learning contract](#learning-contract)
+- [Current checkpoint](#current-checkpoint)
+- [Fundamentals-first roadmap](#fundamentals-first-roadmap)
+- [Target architecture](#target-architecture)
+- [Scope and limitations](#scope-and-limitations)
+- [Questions mapped to stages](#questions-mapped-to-project-stages)
+- [Learning stages](#stage-1-sockets-addresses-and-ports)
+- [Go learning track](#go-learning-track)
+
 ## Learning contract
 
 This repository exists to teach networking from first principles. Every stage should answer four questions:
 
-1. what problem caused this mechanism to be invented?
-2. what concrete bytes or state does it introduce?
-3. what changes along one packet's path, and what stays the same?
-4. what latency, failure, or security tradeoff does it create?
+1. What problem caused this mechanism to be invented?
+2. What concrete bytes or state does it introduce?
+3. What changes along one packet's path, and what stays the same?
+4. What latency, failure, or security tradeoff does it create?
 
 Linux commands are laboratory equipment, not the subject. We use namespaces,
 nftables, and routing commands only when they make fundamental behavior
 observable. This is not a system-administration or deployment-automation project.
 
 Learner-run commands should include a Linux observation mechanism such as a
-network namespace, tcpdump, ip, nftables, or a tun device. correctness and
+network namespace, tcpdump, IP, nftables, or a TUN device. Correctness and
 negative cases belong in automated code tests run during implementation, not
 in separate learner commands whose only purpose is to prove or disprove a case.
 
@@ -124,9 +135,9 @@ node a behind nat/firewall
 node b on another private subnet
 ```
 
-a separate coordination server will distribute identities, addresses, and routes. this recreates the important architectural ideas from the tailscale article without attempting to reproduce wireguard itself: centralized control, distributed data transfer, nat traversal, relay fallback, and subnet routing.
+A separate coordination server will distribute identities, addresses, and routes. This recreates the important architectural ideas from the Tailscale article without attempting to reproduce WireGuard itself: centralized control, distributed data transfer, NAT traversal, relay fallback, and subnet routing.
 
-i recommend rust for the main implementation. it exposes socket addresses, byte buffers, packet formats, and state transitions clearly. we will initially avoid async rust and use blocking sockets plus threads so the network mechanics remain visible.
+I recommend Rust for the main implementation. It exposes socket addresses, byte buffers, packet formats, and state transitions clearly. We will initially avoid async Rust and use blocking sockets plus threads so the network mechanics remain visible.
 
 ### Architectural planes
 
@@ -156,7 +167,7 @@ nat/router a ───── simulated internet ───── router b
                   203.0.113.10
 ```
 
-a network namespace is an isolated linux network stack. each namespace has its own interfaces, addresses, routes, sockets, and firewall state. this lets one kernel imitate several computers and routers while sharing the same filesystem and cpu.
+A network namespace is an isolated Linux network stack. Each namespace has its own interfaces, addresses, routes, sockets, and firewall state. This lets one kernel imitate several computers and routers while sharing the same filesystem and CPU.
 
 10.10.0.0/24 and 10.20.0.0/24 are inside the private-use 10.0.0.0/8 range. 192.0.2.0/24, 198.51.100.0/24, and 203.0.113.0/24 are documentation-only ranges and should not identify real internet hosts.
 
@@ -196,659 +207,693 @@ a network namespace is an isolated linux network stack. each namespace has its o
 
 ## Stage 1: Sockets, addresses, and ports
 
-build four small modes inside one binary:
+Build four small modes inside one binary:
 
+```bash
 meshlet tcp-server
 meshlet tcp-client
 meshlet udp-server
 meshlet udp-client
+```
 
-each mode should print:
+Each mode should print:
 
-local socket address
-remote socket address
-number of bytes sent or received
-the exact received bytes
+- Local socket address
+- Remote socket address
+- Number of bytes sent or received
+- The exact received bytes
 
-a socket address is:
+A socket address is:
 
-ip address + port
+IP address + port
 
-but the complete identity of a transport endpoint includes the protocol:
+But the complete identity of a transport endpoint includes the protocol:
 
-tcp + 192.0.2.10 + port 8000
-udp + 192.0.2.10 + port 8000
+```text
+TCP + 192.0.2.10 + port 8000
+UDP + 192.0.2.10 + port 8000
+```
 
-ports do not belong to ip itself. both tcp and udp have separate 16-bit source-port and destination-port fields in their own headers.
+Ports do not belong to IP itself. Both TCP and UDP have separate 16-bit source-port and destination-port fields in their own headers.
 
-therefore, these can coexist:
+Therefore, these can coexist:
 
-tcp port 8000
-udp port 8000
+```text
+TCP port 8000
+UDP port 8000
+```
 
-they are distinct because the protocol differs.
+They are distinct because the protocol differs.
 
-the first packet experiment will show:
+The first packet experiment will show:
 
-ethernet frame
-    contains an ip packet
-        contains a tcp segment or udp datagram
+```text
+Ethernet frame
+    contains an IP packet
+        contains a TCP segment or UDP datagram
             contains your application bytes
+```
 
-we will inspect this with tcpdump.
+We will inspect this with tcpdump.
 
 ## Stage 2: Construct a small internet
 
-the internet is not one giant network owned by one entity.
+The internet is not one giant network owned by one entity.
 
-it is a collection of separate networks connected by routers:
+It is a collection of separate networks connected by routers:
 
-network a ── router ── network b ── router ── network c
+Network a ── router ── network b ── router ── network c
 
-an ip packet contains a destination ip address. each router consults a routing table and chooses where to send the packet next.
+An IP packet contains a destination IP address. Each router consults a routing table and chooses where to send the packet next.
 
-a routing table contains rules like:
+A routing table contains rules like:
 
-destination prefix     next hop
+```text
+Destination prefix     next hop
 10.10.0.0/24           interface a
 10.20.0.0/24           interface b
 0.0.0.0/0              upstream router
+```
 
-a prefix represents a set of ip addresses used for route matching.
+A prefix represents a set of IP addresses used for route matching. In
+`10.10.0.0/24`, the first 24 address bits must match 10.10.0. The remaining 8
+bits distinguish addresses inside that prefix.
 
-10.10.0.0/24
+Approximately:
 
-means that the first 24 address bits must match 10.10.0. the remaining 8 bits distinguish addresses inside that prefix.
-
-approximately:
-
-network:
+Network:
     10.10.0.x
 
-possible final byte:
+Possible final byte:
     0 through 255
 
-the final 8 bits are sometimes called the host portion, but they are not a mac address. an ip address and a mac address are separate identifiers:
+The final 8 bits are sometimes called the host portion, but they are not a MAC address. An IP address and a MAC address are separate identifiers:
 
-ip address:
+IP address:
     used for end-to-end routing across networks
 
-mac address:
-    used to deliver an ethernet frame across one local link
+MAC address:
+    used to deliver an Ethernet frame across one local link
 
-a router normally preserves the source and destination ip addresses, decreases ttl, removes the incoming ethernet frame, and creates a new ethernet frame for the next link.
+A router normally preserves the source and destination IP addresses, decreases TTL, removes the incoming Ethernet frame, and creates a new Ethernet frame for the next link.
 
-we will create several namespaces and connect them with virtual ethernet pairs. a veth pair is two virtual interfaces joined by the kernel: an ethernet frame sent into one endpoint appears at the other endpoint.
+We will create several namespaces and connect them with virtual Ethernet pairs. A veth pair is two virtual interfaces joined by the kernel: an Ethernet frame sent into one endpoint appears at the other endpoint.
 
-this stage is complete when:
+This stage is complete when:
 
-node a reaches node b through a router
-tcpdump on both router interfaces shows changing mac addresses
-the ip endpoints and transport ports remain stable
-ttl decreases by one router hop
+- Node A reaches node B through a router
+- tcpdump on both router interfaces shows changing MAC addresses
+- The IP endpoints and transport ports remain stable
+- TTL decreases by one router hop
 
 ## Stage 3: Private addresses, public addresses, and NAT
 
-private ipv4 ranges include:
+Private IPv4 ranges include:
 
-10.0.0.0/8
-172.16.0.0/12
-192.168.0.0/16
+- `10.0.0.0/8`
+- `172.16.0.0/12`
+- `192.168.0.0/16`
 
-these addresses are not globally routed across the public internet.
+These addresses are not globally routed across the public internet.
 
-your laptop might use:
+Your laptop might use `192.168.1.20`, while its router uses a public address
+assigned by an internet provider, such as `203.0.113.50` in this lab.
 
-192.168.1.20
+NAT translates between them.
 
-while its router uses a public address assigned by an internet provider:
+Suppose your laptop sends:
 
-203.0.113.50
-
-nat translates between them.
-
-suppose your laptop sends:
-
-protocol:       udp
+```text
+Protocol:       UDP
 source:         192.168.1.20:50000
 destination:    198.51.100.30:9000
+```
 
-the router may rewrite it as:
+The router may rewrite it as:
 
-protocol:       udp
+```text
+Protocol:       UDP
 source:         203.0.113.50:62001
 destination:    198.51.100.30:9000
+```
 
-the router records a mapping:
+The router records a mapping:
 
-udp 203.0.113.50:62001
+```text
+UDP 203.0.113.50:62001
     ↔
-udp 192.168.1.20:50000
+UDP 192.168.1.20:50000
+```
 
-when a reply arrives for 203.0.113.50:62001, the router looks up the entry, rewrites the destination, and forwards it to the laptop.
+When a reply arrives for 203.0.113.50:62001, the router looks up the entry, rewrites the destination, and forwards it to the laptop.
 
-this directly answers how one public address can serve several private devices.
+This directly answers how one public address can serve several private devices.
 
-the mapping includes a port because many internal connections share the same public ip.
+The mapping includes a port because many internal connections share the same public IP.
 
-our observed nat trace is:
+Our observed NAT trace is:
 
-private side request:
+Private side request:
     10.10.0.2:48700 → 192.0.2.20:8000
 
-public side request:
+Public side request:
     192.0.2.10:48700 → 192.0.2.20:8000
 
-public side reply:
+Public side reply:
     192.0.2.20:8000 → 192.0.2.10:48700
 
-private side reply:
+Private side reply:
     192.0.2.20:8000 → 10.10.0.2:48700
 
-the experiment matters because it proves the transformation and reverse mapping. the nftables syntax is only how this one-machine lab requests that behavior.
+The experiment matters because it proves the transformation and reverse mapping. The nftables syntax is only how this one-machine lab requests that behavior.
 
 ## Stage 4: “Behind a firewall”
 
-a stateful firewall remembers active communication.
+A stateful firewall remembers active communication.
 
-when the private client sends outward:
+When the private client sends outward:
 
-client → server
+Client → server
 
-the firewall records state describing that flow.
+The firewall records state describing that flow.
 
-a simplified flow key is called the five-tuple:
+A simplified flow key is called the five-tuple:
 
-source ip
-source port
-destination ip
-destination port
-transport protocol
+- Source IP
+- Source port
+- Destination IP
+- Destination port
+- Transport protocol
 
-a matching reply:
+A matching reply (`server → client`) is accepted because the firewall
+recognizes it as part of an existing flow.
 
-server → client
+An unrelated inbound packet (`unknown internet host → private client`) is
+rejected because:
 
-is accepted because the firewall recognizes it as part of an existing flow.
+- No matching connection state exists
+- No explicit inbound firewall rule exists
 
-an unrelated inbound packet is rejected:
+This is what “the client is behind a firewall but can connect outward” means.
 
-unknown internet host → private client
+The client initiates communication. The firewall permits matching responses.
 
-because:
+The fundamental experiment is intentionally small:
 
-no matching connection state exists
-no explicit inbound firewall rule exists
+1. Permit a new private-to-public flow
+2. Permit the matching reply
+3. Reject a new public-to-private flow
+4. Prove where the rejected packet stopped
 
-this is what “the client is behind a firewall but can connect outward” means.
+We care about the state machine and packet path, not memorizing firewall configuration syntax.
 
-the client initiates communication. the firewall permits matching responses.
+Run the executable model:
 
-the fundamental experiment is intentionally small:
-
-1. permit a new private-to-public flow
-2. permit the matching reply
-3. reject a new public-to-private flow
-4. prove where the rejected packet stopped
-
-we care about the state machine and packet path, not memorizing firewall configuration syntax.
-
-run the executable model:
-
+```bash
 cargo run -- firewall-demo
+```
 
-`cargo run` compiles and starts the debug binary. `--` ends cargo's own options, so `firewall-demo` is passed to meshlet as its mode.
+`cargo run` compiles and starts the debug binary. `--` ends cargo's own options, so `firewall-demo` is passed to Meshlet as its mode.
 
-the model stores exact reply flows in a hash map until their deadline. it lets us inspect the decision rule without mixing it with linux configuration. it is not yet a packet firewall: it does not parse live packets, forward them, model tcp handshake states, or handle concurrent access. the next experiment compares this small model with the kernel's real connection tracking.
+The model stores exact reply flows in a hash map until their deadline. It lets us inspect the decision rule without mixing it with Linux configuration. It is not yet a packet firewall: it does not parse live packets, forward them, model TCP handshake states, or handle concurrent access. The next experiment compares this small model with the kernel's real connection tracking.
 
-live packet experiment
+### Live packet experiment
 
-rebuild the three-network-namespace topology, then install the experiment rules:
+Rebuild the three-network-namespace topology, then install the experiment rules:
 
+```bash
 bash namespaces.md
 bash lab/firewall-live.sh setup
+```
 
-the setup adds one temporary route so mesh-b can deliver an unsolicited packet to the router. without that route, mesh-b itself would report “network is unreachable,” and the firewall would never receive the packet.
+The setup adds one temporary route so mesh-b can deliver an unsolicited packet to the router. Without that route, mesh-b itself would report “network is unreachable,” and the firewall would never receive the packet.
 
-the router's forwarding policy is:
+The router's forwarding policy is:
 
-private r0 → public r1:
+Private r0 → public r1:
     allow new exchanges and packets belonging to tracked exchanges
 
-public r1 → private r0:
+Public r1 → private r0:
     allow only packets belonging to tracked exchanges
 
-anything else:
+Anything else:
     count and drop
 
 `ct` means connection tracking: kernel-maintained memory about observed packet flows. `new` means the packet begins a flow the tracker has not yet seen in both directions. `established` means the tracker has seen traffic that belongs to an existing two-way exchange. `related` means a separate flow is associated with an existing one, such as some network error messages. `counter` records matching packet and byte totals. `drop` stops the packet; `accept` permits it to continue through this firewall hook.
 
-show the rules and their counters at any time:
+Show the rules and their counters at any time:
 
+```bash
 bash lab/firewall-live.sh show
+```
 
-remove only this experiment's firewall table and temporary route:
+Remove only this experiment's firewall table and temporary route:
 
+```bash
 bash lab/firewall-live.sh cleanup
+```
 
-a firewall and nat are different even when one router performs both:
+A firewall and NAT are different even when one router performs both:
 
-nat:
+NAT:
     rewrites addresses or ports
 
-firewall:
+Firewall:
     decides whether a packet may continue
 
 ## Stage 5: Static public VPN addresses
 
-a public vpn gateway needs a stable location clients can contact.
+A public VPN gateway needs a stable location clients can contact.
 
-commercial vpn operators commonly obtain addresses from:
+Commercial VPN operators commonly obtain addresses from:
 
-a cloud provider
-a hosting provider
-an internet service provider
-an address block they control
+- A cloud provider
+- A hosting provider
+- An internet service provider
+- An address block they control
 
-the address remains assigned to the gateway or to the provider’s virtual networking configuration.
+The address remains assigned to the gateway or to the provider’s virtual networking configuration.
 
-a client can therefore store:
+A client can therefore store:
 
-vpn.example.com:51820
+`vpn.example.com:51820`
 
-dns translates the hostname into a public ip address.
+DNS translates the hostname into a public IP address.
 
-for our project, the coordination server and relay will receive fixed addresses inside the simulated public network:
+For our project, the coordination server and relay will receive fixed addresses inside the simulated public network:
 
-coordination server:
+Coordination server:
     203.0.113.10
 
-relay:
+Relay:
     203.0.113.20
 
-the private nodes will always know how to contact them.
+The private nodes will always know how to contact them.
 
-this reproduces the important property of a public vpn gateway without renting an actual internet server.
+This reproduces the important property of a public VPN gateway without renting an actual internet server.
 
 ## Stage 6: Control plane and distributed-systems membership
 
-the control plane distributes decisions and metadata. it is not normally on the per-packet data path:
+The control plane distributes decisions and metadata. It is not normally on the per-packet data path:
 
-control plane:
+Control plane:
     who is a member, which identity key belongs to whom, which endpoint is current, which routes and policies are allowed
 
-data plane:
+Data plane:
     the repeated movement of application packets between nodes
 
-this separation exists so nodes can exchange most packets directly without sending every payload through a central coordinator.
+This separation exists so nodes can exchange most packets directly without sending every payload through a central coordinator.
 
-each node will generate a persistent node id and register with the coordinator:
+Each node will generate a persistent node ID and register with the coordinator:
 
-node id
-identity public key
-current udp endpoint
-overlay ip address
-advertised subnet routes
-last heartbeat time
+- Node ID
+- Identity public key
+- Current UDP endpoint
+- Overlay IP address
+- Advertised subnet routes
+- Last heartbeat time
 
-the coordinator maintains a membership table:
+The coordinator maintains a membership table:
 
-node a:
+Node a:
     alive
     endpoint = 192.0.2.10:41000
 
-node b:
+Node b:
     alive
     endpoint = 198.51.100.10:42000
 
-this introduces distributed-systems problems:
+This introduces distributed-systems problems:
 
-identity versus location
+Identity versus location
 
-the node identity should remain stable while its network address changes.
+The node identity should remain stable while its network address changes.
 
-identity:
+Identity:
     node a
 
-old location:
+Old location:
     192.0.2.10:41000
 
-new location:
+New location:
     192.0.2.44:53000
 failure detection
 
-the coordinator cannot know immediately whether a node crashed or lost connectivity.
+The coordinator cannot know immediately whether a node crashed or lost connectivity.
 
-nodes send periodic heartbeats.
+Nodes send periodic heartbeats.
 
-the coordinator treats a node as unavailable when its heartbeat expires.
+The coordinator treats a node as unavailable when its heartbeat expires.
 
-this is not perfect knowledge. a missing heartbeat could mean:
+This is not perfect knowledge. A missing heartbeat could mean:
 
-node crashed
-network dropped packets
-router failed
-coordinator was temporarily unreachable
+- Node crashed
+- Network dropped packets
+- Router failed
+- Coordinator was temporarily unreachable
 
-that uncertainty is fundamental in distributed systems.
+That uncertainty is fundamental in distributed systems.
 
-leases
+Leases
 
-a registration will have an expiration time.
+A registration will have an expiration time.
 
-the node must periodically renew it.
+The node must periodically renew it.
 
-this prevents stale addresses from remaining valid forever.
+This prevents stale addresses from remaining valid forever.
 
-the coordinator is authoritative for membership metadata but does not have perfect knowledge of reality. heartbeats and leases turn silence into a time-bounded guess. this stage will make that uncertainty explicit with expiration, re-registration, duplicate messages, and an unreachable node.
+The coordinator is authoritative for membership metadata but does not have perfect knowledge of reality. Heartbeats and leases turn silence into a time-bounded guess. This stage will make that uncertainty explicit with expiration, re-registration, duplicate messages, and an unreachable node.
 
-first coordinator implementation
+First coordinator implementation
 
-the first version is an in-memory udp service. it supports two versioned messages:
+The first version is an in-memory UDP service. It supports two versioned messages:
 
 MESHLET/1 REGISTER NODE_ID LEASE_SECONDS
 MESHLET/1 LOOKUP NODE_ID
 
-`MESHLET/1` is a protocol-version label. a protocol is an agreed message format and behavior. including the version lets a receiver reject message formats it does not understand instead of silently misinterpreting them.
+`MESHLET/1` is a protocol-version label. A protocol is an agreed message format and behavior. Including the version lets a receiver reject message formats it does not understand instead of silently misinterpreting them.
 
-the registry maps:
+The registry maps:
 
-node id → observed udp source endpoint + expiration deadline
+`node ID → observed UDP source endpoint + expiration deadline`
 
-the endpoint is observed from the received udp datagram. it is not accepted from a claimed address inside the request. behind nat, this means the coordinator sees the router's translated source endpoint rather than the node's private endpoint.
+The endpoint is observed from the received UDP datagram. It is not accepted from a claimed address inside the request. Behind NAT, this means the coordinator sees the router's translated source endpoint rather than the node's private endpoint.
 
-the datagram is bounded to 1024 bytes, node ids are bounded and validated, leases are limited to 1–300 seconds, messages have an explicit version, clients use a response timeout, and expiration is tested with a caller-controlled monotonic time. these are transferable production principles; this teaching protocol and implementation are original to Meshlet.
+The datagram is bounded to 1024 bytes, node IDs are bounded and validated, leases are limited to 1–300 seconds, messages have an explicit version, clients use a response timeout, and expiration is tested with a caller-controlled monotonic time. These are transferable production principles; this teaching protocol and implementation are original to Meshlet.
 
-the first version intentionally has no authentication and stores no durable data. anyone who can contact it can claim or replace a node id, and all entries disappear if the coordinator process restarts. we will demonstrate the identity flaw before adding cryptographic authentication.
+The first version intentionally has no authentication and stores no durable data. Anyone who can contact it can claim or replace a node ID, and all entries disappear if the coordinator process restarts. We will demonstrate the identity flaw before adding cryptographic authentication.
 
-coordinator modes:
+Coordinator modes:
 
+```bash
 meshlet coordinator-server [BIND_ADDRESS]
 meshlet coordinator-register [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID] [LEASE_SECONDS]
 meshlet coordinator-lookup [BIND_ADDRESS] [SERVER_ADDRESS] [NODE_ID]
+```
 
-live namespace experiment
+Live namespace experiment
 
-rebuild the topology and binary:
+Rebuild the topology and binary:
 
+```bash
 bash namespaces.md
 cargo build
+```
 
-the current lab uses four simulated machines. `mesh-a` and `mesh-b` are peers,
-`mesh-r` is their router, and `mesh-c` is the coordinator. a simulated machine
-is a network namespace: a separate network stack inside the same linux kernel.
-the coordinator is a process running inside `mesh-c`; in a real deployment it
-would normally run on a separate host, vm, or container.
+The current lab uses four simulated machines. `mesh-a` and `mesh-b` are peers,
+`mesh-r` is their router, and `mesh-c` is the coordinator. A simulated machine
+is a network namespace: a separate network stack inside the same Linux kernel.
+The coordinator is a process running inside `mesh-c`; in a real deployment it
+would normally run on a separate host, VM, or container.
 
-start the coordinator on mesh-c:
+Start the coordinator on mesh-c:
 
+```bash
 sudo ip netns exec mesh-c target/debug/meshlet \
   coordinator-server 203.0.113.10:9000
+```
 
-register mesh-a for 30 seconds:
+Register mesh-a for 30 seconds:
 
+```bash
 sudo ip netns exec mesh-a target/debug/meshlet \
   coordinator-register 10.10.0.2:0 203.0.113.10:9000 mesh-a 30
+```
 
-look it up before the lease expires:
+Look it up before the lease expires:
 
+```bash
 sudo ip netns exec mesh-b target/debug/meshlet \
   coordinator-lookup 192.0.2.20:0 203.0.113.10:9000 mesh-a
+```
 
-the client knows its private local endpoint, while the coordinator should report
-a source endpoint translated to the router's `203.0.113.1` address. this is
+The client knows its private local endpoint, while the coordinator should report
+a source endpoint translated to the router's `203.0.113.1` address. This is
 location discovery: the service tells a node how another packet appeared at a
 shared observation point.
 
-authenticated coordinator registration
+Authenticated coordinator registration
 
-the two keys have different capabilities:
+The two keys have different capabilities:
 
-private key:
-    secret bytes held by the node. they can create signatures. possession of
+Private key:
+    secret bytes held by the node. They can create signatures. Possession of
     these bytes is what lets a process act as that node.
 
-public key:
-    non-secret bytes copied to the coordinator. they can verify signatures but
+Public key:
+    non-secret bytes copied to the coordinator. They can verify signatures but
     cannot feasibly create one or recover the private key.
 
-a signature is a fixed-size mathematical proof tied to the exact message bytes
-and a private key. verification is the yes/no calculation performed with the
-corresponding public key. this provides authentication and tamper detection; it
+A signature is a fixed-size mathematical proof tied to the exact message bytes
+and a private key. Verification is the yes/no calculation performed with the
+corresponding public key. This provides authentication and tamper detection; it
 does not encrypt the message or hide it.
 
-the coordinator's authorization file is the initial trust decision:
+The coordinator's authorization file is the initial trust decision:
 
-mesh-a -> mesh-a's public key
+Mesh-a -> mesh-a's public key
 
-the mathematics proves that a signature matches that key. the file tells the
-coordinator which key is allowed to act as `mesh-a`. safely adding that mapping
+The mathematics proves that a signature matches that key. The file tells the
+coordinator which key is allowed to act as `mesh-a`. Safely adding that mapping
 is called enrollment.
 
-version 2 adds a challenge-response exchange. a challenge is a fresh random
-value chosen by the verifier. it is public, not a password. its purpose is to
+Version 2 adds a challenge-response exchange. A challenge is a fresh random
+value chosen by the verifier. It is public, not a password. Its purpose is to
 make this registration different from every earlier registration:
 
-1. node asks for a challenge using its node id
-2. coordinator generates an unpredictable 32-byte challenge and binds it to that node id plus the observed udp source endpoint for 10 seconds
-3. node signs a canonical registration message containing the node id, requested lease, and challenge
-4. coordinator finds the pre-authorized public key for that node id and strictly verifies the ed25519 signature
-5. coordinator consumes the challenge and records the observed endpoint only after verification succeeds
+1. Node asks for a challenge using its node ID
+2. Coordinator generates an unpredictable 32-byte challenge and binds it to that node ID plus the observed UDP source endpoint for 10 seconds
+3. Node signs a canonical registration message containing the node ID, requested lease, and challenge
+4. Coordinator finds the pre-authorized public key for that node ID and strictly verifies the Ed25519 signature
+5. Coordinator consumes the challenge and records the observed endpoint only after verification succeeds
 
-the word nonce means a value intended for one use. replay means sending an old,
-previously valid message again. consuming the nonce prevents replay. binding it
-to the observed source prevents its use from a different endpoint. signing the
+The word nonce means a value intended for one use. Replay means sending an old,
+previously valid message again. Consuming the nonce prevents replay. Binding it
+to the observed source prevents its use from a different endpoint. Signing the
 lease prevents someone from changing a signed 30-second lease into 300 seconds.
 
-any caller may receive a challenge. that is safe: only the owner of the
-authorized private key can produce the required answer. the observed impostor
+Any caller may receive a challenge. That is safe: only the owner of the
+authorized private key can produce the required answer. The observed impostor
 experiment reached the coordinator and received a challenge, but its different
 private key produced a signature that did not match the authorized public key,
 so verification failed.
 
-the learning keys live under `.meshlet/keys` so every file is visible inside the
+The learning keys live under `.meshlet/keys` so every file is visible inside the
 project. `.meshlet` is excluded by `.gitignore`: private keys must not enter git
-history. the private identity file uses unix mode 0600, meaning only its owner
-may read or write it. the directory uses mode 0700, meaning only its owner may
-list or enter it. public authorization files are non-secret. key generation
+history. The private identity file uses Unix mode 0600, meaning only its owner
+may read or write it. The directory uses mode 0700, meaning only its owner may
+list or enter it. Public authorization files are non-secret. Key generation
 refuses to overwrite either output.
 
-create the private project directory and generate a node identity:
+Create the private project directory and generate a node identity:
 
+```bash
 mkdir -p -m 700 .meshlet/keys
 target/debug/meshlet identity-generate mesh-a \
   .meshlet/keys/mesh-a.identity \
   .meshlet/keys/authorized-nodes
+```
 
-start the authenticated coordinator:
+Start the authenticated coordinator:
 
+```bash
 sudo ip netns exec mesh-c target/debug/meshlet \
   coordinator-server-auth 203.0.113.10:9000 \
   .meshlet/keys/authorized-nodes
+```
 
-register using the private identity:
+Register using the private identity:
 
+```bash
 sudo ip netns exec mesh-a target/debug/meshlet \
   coordinator-register-auth \
   10.10.0.2:0 203.0.113.10:9000 mesh-a 120 \
   .meshlet/keys/mesh-a.identity
+```
 
-look up the authenticated registration:
+Look up the authenticated registration:
 
+```bash
 sudo ip netns exec mesh-b target/debug/meshlet \
   coordinator-lookup-auth \
   192.0.2.20:0 203.0.113.10:9000 mesh-a
+```
 
-this proves control of the private signing key authorized for `mesh-a`, recent round-trip access to the observed endpoint, and agreement on the signed registration fields. it does not prove that the node is uncompromised, that another peer can reach it, or that it remains alive for the entire lease.
+This proves control of the private signing key authorized for `mesh-a`, recent round-trip access to the observed endpoint, and agreement on the signed registration fields. It does not prove that the node is uncompromised, that another peer can reach it, or that it remains alive for the entire lease.
 
-the current protocol authenticates the registering node only. it does not
+The current protocol authenticates the registering node only. It does not
 authenticate the coordinator to the node, encrypt control messages, authorize
 lookup callers, limit request rates, persist state, rotate keys, or revoke a
-stolen key. those omissions are visible boundaries of the learning stage, not
+stolen key. Those omissions are visible boundaries of the learning stage, not
 production security claims.
 
-production security extension
+### Production security extension
 
-the project-local key directory is a deliberate learning compromise: visible,
-inspectable, and protected from accidental git commits. a production system
+The project-local key directory is a deliberate learning compromise: visible,
+inspectable, and protected from accidental git commits. A production system
 would normally store private keys in a restricted operating-system secret
-store, or use a tpm or hsm: hardware designed to perform cryptographic
-operations without releasing the private key bytes. a hosted service may use a
-kms, meaning a managed key-management service. production also needs protected
+store, or use a TPM or HSM: hardware designed to perform cryptographic
+operations without releasing the private key bytes. A hosted service may use a
+KMS, meaning a managed key-management service. Production also needs protected
 enrollment, key rotation (replacing keys), revocation (declaring a key no longer
 trusted), encrypted backups, access auditing, and a protected channel to the
-coordinator. public keys may be distributed widely; private keys must never be
+coordinator. Public keys may be distributed widely; private keys must never be
 logged or copied into source control.
 
 ## Stage 7: Authenticated cryptographic handshake
 
-we will not implement encryption algorithms ourselves. we will use established implementations but build the handshake protocol and state machine ourselves.
+We will not implement encryption algorithms ourselves. We will use established implementations but build the handshake protocol and state machine ourselves.
 
-the four separate cryptographic goals are:
+The four separate cryptographic goals are:
 
-identity authentication:
+Identity authentication:
     prove which long-term node signed a handshake
 
-key agreement:
+Key agreement:
     derive a shared secret without sending that secret
 
-key derivation:
+Key derivation:
     turn shared material and transcript context into independent directional keys
 
-authenticated encryption:
+Authenticated encryption:
     hide packet contents and reject modification
 
-each node will have two kinds of keys.
+Each node will have two kinds of keys.
 
-identity key:
-    ed25519
+Identity key:
+    Ed25519
     used to sign and verify handshake messages
 
-ephemeral exchange key:
-    x25519
+Ephemeral exchange key:
+    X25519
     used to derive a temporary shared secret
 
-the implemented handshake uses two packets, so it takes one network round trip:
+The implemented handshake uses two packets, so it takes one network round trip:
 
-node a → node b:
+Node a → node b:
 
-client hello
+Client hello
     node a ephemeral public key
-    signature over the protocol version, both node ids, and that public key
+    signature over the protocol version, both node IDs, and that public key
 
-the identity public key is not sent as self-asserted truth. node b loads the
+The identity public key is not sent as self-asserted truth. Node b loads the
 public key already authorized for node a and uses that key to verify the
 signature.
 
-node b performs:
+Node b performs:
 
-1. look up node a's expected identity key
+1. Look up node a's expected identity key
 
-2. verify the signature
+2. Verify the signature
 
-3. reject the message if verification fails
+3. Reject the message if verification fails
 
-4. generate its own ephemeral x25519 key pair
+4. Generate its own ephemeral X25519 key pair
 
-then node b returns:
+Then node b returns:
 
-server hello
+Server hello
     node b ephemeral public key
-    signature over both node ids and both ephemeral public keys
+    signature over both node IDs and both ephemeral public keys
 
-node a verifies that signature using the public identity key it already trusts
-for node b. each ephemeral key pair is freshly generated for one handshake.
+Node a verifies that signature using the public identity key it already trusts
+for node b. Each ephemeral key pair is freshly generated for one handshake.
 
-both sides compute:
+Both sides compute:
 
-shared secret =
-    x25519(our ephemeral private key,
+Shared secret =
+    X25519(our ephemeral private key,
            peer ephemeral public key)
 
-the mathematical operation produces the same shared secret on both nodes without transmitting that secret.
+The mathematical operation produces the same shared secret on both nodes without transmitting that secret.
 
-the secret is passed through hkdf:
+The secret is passed through HKDF:
 
-shared secret
-    + handshake transcript
+Shared secret
+    + Handshake transcript
     ↓
-hkdf
+HKDF
     ↓
 a-to-b encryption key
 b-to-a encryption key
 
-data packets now use chacha20-poly1305.
+Data packets now use chacha20-poly1305.
 
-chacha20-poly1305 is an aead: authenticated encryption with associated data. the encrypted payload is confidential, while selected unencrypted headers can still be covered by integrity protection.
+Chacha20-poly1305 is an aead: authenticated encryption with associated data. The encrypted payload is confidential, while selected unencrypted headers can still be covered by integrity protection.
 
-it provides:
+It provides:
 
-confidentiality:
+Confidentiality:
     outsiders cannot read the contents
 
-integrity:
+Integrity:
     modified packets fail verification
 
-authentication:
+Authentication:
     a valid packet proves knowledge of the session key
 
-discarding the ephemeral private keys after the handshake provides forward secrecy: later theft of the long-term identity key should not reveal previously recorded session traffic.
+Discarding the ephemeral private keys after the handshake provides forward secrecy: later theft of the long-term identity key should not reveal previously recorded session traffic.
 
-the implementation derives two 32-byte directional keys:
+The implementation derives two 32-byte directional keys:
 
-client to server key
+Client to server key
 server to client key
 
-directional means each traffic direction receives a different key. therefore,
+Directional means each traffic direction receives a different key. Therefore,
 both directions may start their packet number at zero without reusing a nonce
 with the same key.
 
-each encrypted UDP datagram contains:
+Each encrypted UDP datagram contains:
 
-visible header
-    meshlet packet marker
+Visible header
+    Meshlet packet marker
     direction
     packet number
 
-encrypted body
+Encrypted body
     application bytes
     authentication tag
 
-ciphertext means the unreadable encrypted form of the application bytes. the
+Ciphertext means the unreadable encrypted form of the application bytes. The
 16-byte authentication tag is a compact check produced by the cipher; the
 receiver rejects the packet if the key, header, or ciphertext does not match it.
 
-a nonce is a value that must be unique for every packet encrypted with one
-key. meshlet constructs it from the direction and packet number. it is not a
-secret. the packet number starts at zero and increases. the receiver expects
+A nonce is a value that must be unique for every packet encrypted with one
+key. Meshlet constructs it from the direction and packet number. It is not a
+secret. The packet number starts at zero and increases. The receiver expects
 the next number, so the same datagram cannot be accepted twice.
 
-the visible header is associated data: it is not hidden, but it is included in
-the authentication calculation. changing either the header or ciphertext makes
+The visible header is associated data: it is not hidden, but it is included in
+the authentication calculation. Changing either the header or ciphertext makes
 the packet invalid.
 
-the client sends one encrypted message and the server returns its decrypted
-bytes through the opposite directional key. successfully decrypting those
-packets confirms that both peers derived the same keys. the keys disappear when
+The client sends one encrypted message and the server returns its decrypted
+bytes through the opposite directional key. Successfully decrypting those
+packets confirms that both peers derived the same keys. The keys disappear when
 the two learning processes exit.
 
-live encrypted-echo experiment
+Live encrypted-echo experiment
 
-start the one-exchange server inside mesh-b's network namespace:
+Start the one-exchange server inside mesh-b's network namespace:
 
+```bash
 sudo ip netns exec mesh-b target/release/meshlet \
   secure-echo-server \
   192.0.2.20:7000 \
   .meshlet/keys/mesh-b.identity \
   .meshlet/keys/authorized-nodes
+```
 
-observe the whole exchange on every mesh-r interface:
+Observe the whole exchange on every mesh-r interface:
 
+```bash
 sudo ip netns exec mesh-r \
   tcpdump -nni any -X 'udp port 7000'
+```
 
-run the client inside mesh-a's network namespace:
+Run the client inside mesh-a's network namespace:
 
+```bash
 sudo ip netns exec mesh-a target/release/meshlet \
   secure-echo-client \
   10.10.0.2:0 \
@@ -856,89 +901,99 @@ sudo ip netns exec mesh-a target/release/meshlet \
   .meshlet/keys/mesh-a.identity \
   mesh-b \
   .meshlet/keys/mesh-b.authorization
+```
 
-there are four UDP datagrams: client hello, server hello, encrypted request,
-and encrypted echo. because `-i any` watches both router interfaces, it normally
-shows each datagram once entering and once leaving: eight capture lines. the
-hello fields remain visible. the last two datagrams expose only the 13-byte
+There are four UDP datagrams: client hello, server hello, encrypted request,
+and encrypted echo. Because `-i any` watches both router interfaces, it normally
+shows each datagram once entering and once leaving: eight capture lines. The
+hello fields remain visible. The last two datagrams expose only the 13-byte
 header (`MSH3`, direction, and packet number) followed by ciphertext and a
 16-byte authentication tag. `hello from encrypted meshlet` appears only in the
 processes' decrypted output, not in those captured datagrams.
 
-the client reports handshake time separately from encrypted-echo round-trip
-time. the server separately reports handshake cryptography and data-packet
-cryptography. each number is one observation, not a stable benchmark.
+The client reports handshake time separately from encrypted-echo round-trip
+time. The server separately reports handshake cryptography and data-packet
+cryptography. Each number is one observation, not a stable benchmark.
 
-on a real wide-area path, the network round trip will usually dominate this
-setup cost. after the handshake, key agreement and identity signatures are
+On a real wide-area path, the network round trip will usually dominate this
+setup cost. After the handshake, key agreement and identity signatures are
 not repeated for every data packet; the cheaper symmetric packet cipher will
 operate on the data path.
 
-this is deliberately a one-exchange learning server. retries, concurrent
+This is deliberately a one-exchange learning server. Retries, concurrent
 clients, out-of-order delivery, key rotation, and session resumption are omitted
 until an experiment gives us a concrete reason to introduce them.
 
-we use established library implementations and explicit byte encodings.
-production systems do not copy cryptographic primitives into application code.
+We use established library implementations and explicit byte encodings.
+Production systems do not copy cryptographic primitives into application code.
 
 ## Stage 8: Direct connectivity and relay fallback
 
-connectivity means that packets sent to an endpoint can actually reach the intended node and that replies can return. knowing an ip address is not enough when nat mappings, firewalls, or changing ports affect the path.
+Connectivity means that packets sent to an endpoint can actually reach the intended node and that replies can return. Knowing an IP address is not enough when NAT mappings, firewalls, or changing ports affect the path.
 
-we will build this in two small steps. first, run the same secure echo directly
-and through a relay so the two data paths are visible. second, add automatic
-probing and path selection. this keeps forwarding separate from the later
+We will build this in two small steps. First, run the same secure echo directly
+and through a relay so the two data paths are visible. Second, add automatic
+probing and path selection. This keeps forwarding separate from the later
 decision about which path to use.
 
-the first relay is deliberately a one-client, one-exchange udp process:
+The first relay is deliberately a one-client, one-exchange UDP process:
 
-client endpoint ← relay socket → configured server endpoint
+Client endpoint ← relay socket → configured server endpoint
 
-an endpoint is an ip address plus a udp port. the relay learns the client's
-endpoint from the source of the first datagram. it already knows the server's
-endpoint from its command line. it then copies each received datagram to the
+An endpoint is an IP address plus a UDP port. The relay learns the client's
+endpoint from the source of the first datagram. It already knows the server's
+endpoint from its command line. It then copies each received datagram to the
 other endpoint without parsing or changing its payload.
 
-opaque means the relay treats the payload as an uninterpreted sequence of
-bytes. the end nodes still perform the handshake, authenticate node identities,
-derive session keys, and encrypt the request. the relay has none of those keys.
+Opaque means the relay treats the payload as an uninterpreted sequence of
+bytes. The end nodes still perform the handshake, authenticate node identities,
+derive session keys, and encrypt the request. The relay has none of those keys.
 
-this relay is not an ip router. the kernel router forwards an ip packet by
-looking up that packet's destination address. the relay is a userspace program:
-it receives one udp datagram addressed to its own socket, then sends a new udp
+This relay is not an IP router. The kernel router forwards an IP packet by
+looking up that packet's destination address. The relay is a userspace program:
+it receives one UDP datagram addressed to its own socket, then sends a new UDP
 datagram containing the same payload toward the other endpoint.
 
-live relayed encrypted-echo experiment
+### Live relayed encrypted-echo experiment
 
-if the namespaces were created before the relay address was added to
+If the namespaces were created before the relay address was added to
 `namespaces.md`, add that address to mesh-c's existing interface:
 
+```bash
 sudo ip -n mesh-c address replace 203.0.113.20/24 dev c0
+```
 
-start the existing encrypted server in mesh-b:
+Start the existing encrypted server in mesh-b:
 
+```bash
 sudo ip netns exec mesh-b target/release/meshlet \
   secure-echo-server \
   192.0.2.20:7000 \
   .meshlet/keys/mesh-b.identity \
   .meshlet/keys/authorized-nodes
+```
 
-start the relay at a second address in mesh-c. its configured upstream is the
+Start the relay at a second address in mesh-c. Its configured upstream is the
 encrypted server:
 
+```bash
 sudo ip netns exec mesh-c target/release/meshlet \
   udp-relay \
   203.0.113.20:7100 \
   192.0.2.20:7000
+```
 
-observe both udp legs on every router interface:
+Observe both UDP legs on every router interface:
 
+```bash
 sudo ip netns exec mesh-r \
   tcpdump -nni any -X '(udp port 7000 or udp port 7100)'
+```
 
-run the same secure client, changing only its destination from the direct
+Run the same secure client, changing only its destination from the direct
 server endpoint to the relay endpoint:
 
+```bash
 sudo ip netns exec mesh-a target/release/meshlet \
   secure-echo-client \
   10.10.0.2:0 \
@@ -946,215 +1001,224 @@ sudo ip netns exec mesh-a target/release/meshlet \
   .meshlet/keys/mesh-a.identity \
   mesh-b \
   .meshlet/keys/mesh-b.authorization
+```
 
-the secure exchange still has four logical messages: client hello, server
-hello, encrypted request, and encrypted echo. each message now travels in two
-udp datagrams: endpoint to relay, then relay to the other endpoint. that makes
+The secure exchange still has four logical messages: client hello, server
+hello, encrypted request, and encrypted echo. Each message now travels in two
+UDP datagrams: endpoint to relay, then relay to the other endpoint. That makes
 eight network datagrams. `tcpdump -i any` normally observes each once entering
 and once leaving mesh-r, producing about sixteen capture records.
 
-mesh-b will report the relay socket as its network peer, but it will still
-report `mesh-a` as the authenticated node. this distinction is fundamental:
+Mesh-b will report the relay socket as its network peer, but it will still
+report `mesh-a` as the authenticated node. This distinction is fundamental:
 an endpoint says where the current packet came from; cryptographic identity
 says which key signed the handshake.
 
-the relay adds a userspace receive, a userspace send, another routed leg, and
-more opportunities to wait in queues or for process scheduling. compare its
+The relay adds a userspace receive, a userspace send, another routed leg, and
+more opportunities to wait in queues or for process scheduling. Compare its
 round-trip time with the earlier direct observation, but treat each single run
 as an example rather than a benchmark.
 
-this first relay intentionally omits multiple clients, long-lived sessions,
-registration, authentication at the relay, retries, and rate limits. none is
+This first relay intentionally omits multiple clients, long-lived sessions,
+registration, authentication at the relay, retries, and rate limits. None is
 needed to observe the fundamental forwarding path.
 
-the automatic-selection step will work as follows. nodes first exchange
-observed udp endpoints through the coordinator.
+The automatic-selection step will work as follows. Nodes first exchange
+observed UDP endpoints through the coordinator.
 
-they send small probes toward one another:
+They send small probes toward one another:
 
-node a → node b endpoint
+Node a → node b endpoint
 node b → node a endpoint
 
-these outbound probes create nat state.
+These outbound probes create NAT state.
 
-when this succeeds, encrypted packets travel directly.
+When this succeeds, encrypted packets travel directly.
 
-when it fails, both nodes maintain outbound paths to a multi-node relay:
+When it fails, both nodes maintain outbound paths to a multi-node relay:
 
-node a → relay ← node b
+Node a → relay ← node b
 
-unlike the one-client relay above, that relay will need a small visible routing
+Unlike the one-client relay above, that relay will need a small visible routing
 envelope such as:
 
-destination node id
+Destination node ID
 encrypted payload
 
-it forwards the payload but does not possess the session encryption key.
+It forwards the payload but does not possess the session encryption key.
 
-this demonstrates the difference between:
+This demonstrates the difference between:
 
-routing bytes
+Routing bytes
 and
 understanding bytes
 
-the decision will be evidence-driven:
+The decision will be evidence-driven:
 
-probing:
+Probing:
     send small authenticated messages over a candidate path
 
-timeout:
+Timeout:
     stop waiting after a defined interval
 
-fallback:
+Fallback:
     use the relay when no direct path is confirmed
 
-recovery:
+Recovery:
     keep testing whether a lower-latency direct path becomes available
 
-the relay adds another network hop and more queueing opportunity, so we will measure direct and relayed rtt separately. it must learn only the routing envelope needed to forward ciphertext, not the decrypted payload.
+The relay adds another network hop and more queueing opportunity, so we will measure direct and relayed RTT separately. It must learn only the routing envelope needed to forward ciphertext, not the decrypted payload.
 
 `secure-echo-client-auto` implements the first three decisions with the existing
-authenticated handshake. it waits up to 250 milliseconds for a valid direct
-server hello. a network error or timeout permits a relay attempt. a malformed
+authenticated handshake. It waits up to 250 milliseconds for a valid direct
+server hello. A network error or timeout permits a relay attempt. A malformed
 or incorrectly signed response stops the operation instead of being treated as
-a reachability problem. once one path completes the handshake, the client uses
+a reachability problem. Once one path completes the handshake, the client uses
 that session for encrypted data rather than performing a separate probe round
 trip.
 ## Stage 9: Overlay addresses and TUN interfaces
 
-initially, meshlet will send application messages.
+Initially, Meshlet will send application messages.
 
-later, it will create a linux tun interface.
+Later, it will create a Linux TUN interface.
 
-a tun interface behaves like a virtual layer-3 network card.
+A TUN interface behaves like a virtual layer-3 network card.
 
-layer 3 means the tun interface reads and writes ip packets. it does not carry ethernet headers or mac addresses. a tap interface is the related layer-2 mechanism that carries ethernet frames; meshlet uses tun because the overlay routes ip.
+Layer 3 means the TUN interface reads and writes IP packets. It does not carry Ethernet headers or MAC addresses. A tap interface is the related layer-2 mechanism that carries Ethernet frames; Meshlet uses TUN because the overlay routes IP.
 
-the kernel writes complete ip packets into it:
+The kernel writes complete IP packets into it:
 
-application
+Application
     ↓
-linux tcp/ip stack
+Linux TCP/IP stack
     ↓
-meshlet0 tun interface
+meshlet0 TUN interface
     ↓
-meshlet process reads raw ip packet bytes
+Meshlet process reads raw IP packet bytes
 
-the process then:
+The process then:
 
-reads destination overlay ip
+Reads destination overlay IP
 chooses a peer
-encrypts the ip packet
-sends it over udp
+encrypts the IP packet
+sends it over UDP
 
-the receiving node:
+The receiving node:
 
-receives ciphertext
+Receives ciphertext
 verifies and decrypts it
-writes the recovered ip packet into its tun interface
+writes the recovered IP packet into its TUN interface
 
-the receiving kernel then delivers it to the destination application.
+The receiving kernel then delivers it to the destination application.
 
-at this point, ordinary programs can communicate through the overlay without knowing that meshlet exists.
+At this point, ordinary programs can communicate through the overlay without knowing that Meshlet exists.
 
-this is the key abstraction boundary:
+This is the key abstraction boundary:
 
-ordinary application:
-    opens normal tcp or udp sockets to an overlay ip
+Ordinary application:
+    opens normal TCP or UDP sockets to an overlay IP
 
-kernel:
-    constructs an ip packet and selects meshlet0
+Kernel:
+    constructs an IP packet and selects meshlet0
 
-meshlet process:
-    reads the packet, chooses a peer, encrypts it, transports it, decrypts the peer packet, and writes it back to tun
+Meshlet process:
+    reads the packet, chooses a peer, encrypts it, transports it, decrypts the peer packet, and writes it back to TUN
 
-we will first forward one visible icmp packet, then add encryption. this keeps packet transport separate from cryptographic correctness.
+We will first forward one visible ICMP packet, then add encryption. This keeps packet transport separate from cryptographic correctness.
 
-the first implementation is `tun-udp-one`. it attaches to an existing Linux
-TUN interface and handles one IPv4 packet in each direction. one worker reads a
+The first implementation is `tun-udp-one`. It attaches to an existing Linux
+TUN interface and handles one IPv4 packet in each direction. One worker reads a
 kernel-produced IP packet from TUN and sends those exact bytes as a UDP payload.
-the other receives a UDP payload and writes the recovered IP packet into TUN.
+The other receives a UDP payload and writes the recovered IP packet into TUN.
 
-start the mesh-b endpoint:
+Start the mesh-b endpoint:
 
+```bash
 sudo ip netns exec mesh-b target/release/meshlet \
   tun-udp-one meshlet0 192.0.2.20:7200 192.0.2.10:7200
+```
 
-start the mesh-a endpoint:
+Start the mesh-a endpoint:
 
+```bash
 sudo ip netns exec mesh-a target/release/meshlet \
   tun-udp-one meshlet0 10.10.0.2:7200 192.0.2.20:7200
+```
 
-observe the outer UDP transport at the router:
+Observe the outer UDP transport at the router:
 
+```bash
 sudo ip netns exec mesh-r tcpdump -nni any -X 'udp port 7200'
+```
 
-ask mesh-a's ordinary Linux IP stack to send one ICMP echo request to mesh-b's
+Ask mesh-a's ordinary Linux IP stack to send one ICMP echo request to mesh-b's
 overlay address:
 
+```bash
 sudo ip netns exec mesh-a ping -c 1 -W 1 100.64.0.2
+```
 
-`ping` knows nothing about Meshlet or UDP. its packet follows the connected
+`ping` knows nothing about Meshlet or UDP. Its packet follows the connected
 `100.64.0.0/24` route into `meshlet0`; Meshlet reads it, carries it through UDP,
-and writes it into mesh-b's `meshlet0`. the reply follows the reverse path.
+and writes it into mesh-b's `meshlet0`. The reply follows the reverse path.
 
-this first packet transport is intentionally visible, so the capture exposes
-the complete inner IP packet inside the outer UDP payload. placing the existing
+This first packet transport is intentionally visible, so the capture exposes
+the complete inner IP packet inside the outer UDP payload. Placing the existing
 authenticated-encryption packet format between the TUN and UDP operations is
 an integration step, not a new networking concept, so the learning path moves
 next to subnet routing.
 
 ## Stage 10: Subnets and subnet routers
 
-i assume “subsets” meant subnets.
+I assume “subsets” meant subnets.
 
-a subnet is a set of ip addresses represented by a prefix:
+A subnet is a set of IP addresses represented by a prefix:
 
 10.20.0.0/16
 
-a subnet router is a node that can reach that entire prefix and agrees to forward packets into it.
+A subnet router is a node that can reach that entire prefix and agrees to forward packets into it.
 
-suppose node b is connected to:
+Suppose node b is connected to:
 
-legacy subnet:
+Legacy subnet:
     10.20.0.0/16
 
-node b advertises to the coordinator:
+Node b advertises to the coordinator:
 
-i can route packets for 10.20.0.0/16
+I can route packets for 10.20.0.0/16
 
-node a receives a routing rule:
+Node a receives a routing rule:
 
-destination 10.20.0.0/16
+Destination 10.20.0.0/16
     → encrypted tunnel to node b
 
-node b decrypts the packet and forwards it onto the legacy subnet.
+Node b decrypts the packet and forwards it onto the legacy subnet.
 
-we will implement route selection using longest-prefix matching.
+We will implement route selection using longest-prefix matching.
 
-given:
+Given:
 
 10.0.0.0/8       → router x
 10.20.0.0/16     → router y
 10.20.30.0/24    → router z
 
-a packet for 10.20.30.5 uses router z, because /24 is the most specific matching prefix.
+A packet for 10.20.30.5 uses router z, because /24 is the most specific matching prefix.
 
-longest-prefix matching means selecting the matching route with the greatest prefix length. it chooses the most specific address set, not the route with the numerically largest address.
+Longest-prefix matching means selecting the matching route with the greatest prefix length. It chooses the most specific address set, not the route with the numerically largest address.
 
-a subnet router differs from an ordinary overlay endpoint:
+A subnet router differs from an ordinary overlay endpoint:
 
-ordinary endpoint:
+Ordinary endpoint:
     receives packets addressed to itself
 
-subnet router:
+Subnet router:
     advertises reachability for a prefix and forwards packets to other machines behind it
 
-route advertisement is a claim, not proof. the control plane must decide whether to authorize, distribute, expire, or prefer that claim.
+Route advertisement is a claim, not proof. The control plane must decide whether to authorize, distribute, expire, or prefer that claim.
 
-the first subnet-router topology adds a machine that does not run Meshlet:
+The first subnet-router topology adds a machine that does not run Meshlet:
 
-mesh-a 100.64.0.1
+Mesh-a 100.64.0.1
     ↓ TUN and UDP
 mesh-b 100.64.0.2 and 10.30.0.1
     ↓ ordinary routed link
@@ -1165,43 +1229,47 @@ mesh-d 10.30.0.2
 into `meshlet0`. `mesh-d` routes replies for the overlay prefix through
 `10.30.0.1`.
 
-the Meshlet packet code is unchanged. an IP tunnel can carry a packet whose
+The Meshlet packet code is unchanged. An IP tunnel can carry a packet whose
 destination is the remote VPN node or a machine reachable through that node.
 
-start the mesh-b and mesh-a `tun-udp-one` processes exactly as in stage 9. in a
+Start the mesh-b and mesh-a `tun-udp-one` processes exactly as in stage 9. In a
 third terminal, observe the inner packet crossing mesh-b:
 
+```bash
 sudo ip netns exec mesh-b tcpdump -nni any 'icmp'
+```
 
-then send one ordinary ping from mesh-a to the machine behind mesh-b:
+Then send one ordinary ping from mesh-a to the machine behind mesh-b:
 
+```bash
 sudo ip netns exec mesh-a ping -c 1 -W 1 10.30.0.2
+```
 
-the request enters mesh-b through `meshlet0` and leaves through `b1`. the reply
-enters through `b1` and leaves through `meshlet0`. the reported inner TTL is 63
-because mesh-b routed the inner packet once. mesh-r routes the outer UDP packet
+The request enters mesh-b through `meshlet0` and leaves through `b1`. The reply
+enters through `b1` and leaves through `meshlet0`. The reported inner TTL is 63
+because mesh-b routed the inner packet once. Mesh-r routes the outer UDP packet
 but does not modify the encapsulated inner packet's TTL.
 
-this proves the forwarding mechanism. the next step is the control decision:
+This proves the forwarding mechanism. The next step is the control decision:
 represent advertised prefixes and select the most specific matching peer using
 longest-prefix matching.
 
-route-advertisement experiment
+### Route-advertisement experiment
 
-the data path already knows how to carry and forward an IP packet. this
+The data path already knows how to carry and forward an IP packet. This
 experiment adds the control-plane decision that happens before that data path
 is used:
 
-1. a node sends a claim that it can route a prefix.
-2. the coordinator stores the claim until its lease expires.
+1. A node sends a claim that it can route a prefix.
+2. The coordinator stores the claim until its lease expires.
 3. `mesh-a` asks which node should receive a particular destination.
 
-this learning path is intentionally unauthenticated. in production, the
+This learning path is intentionally unauthenticated. In production, the
 coordinator would authenticate the node making a route claim and apply policy
-to the prefixes it may advertise. the earlier authentication and encryption
+to the prefixes it may advertise. The earlier authentication and encryption
 experiments remain in the project; they are simply not part of this stage.
 
-start the route-aware coordinator in `mesh-c`:
+Start the route-aware coordinator in `mesh-c`:
 
 ```sh
 sudo ip netns exec mesh-c target/release/meshlet \
@@ -1212,7 +1280,7 @@ sudo ip netns exec mesh-c target/release/meshlet \
 `ip netns exec mesh-c` runs the process with mesh-c's isolated network stack.
 The remaining argument selects the coordinator's UDP endpoint.
 
-while it remains running, publish the real subnet route from `mesh-b`:
+While it remains running, publish the real subnet route from `mesh-b`:
 
 ```sh
 sudo ip netns exec mesh-b target/release/meshlet \
@@ -1224,7 +1292,7 @@ sudo ip netns exec mesh-b target/release/meshlet \
 `192.0.2.20:0` means bind locally to that IP address and let Linux choose an
 unused UDP source port. `120` is the lease lifetime in seconds.
 
-before those leases expire, ask from `mesh-a` which node should receive a
+Before those leases expire, ask from `mesh-a` which node should receive a
 packet addressed to `10.30.0.2`:
 
 ```sh
@@ -1234,275 +1302,274 @@ sudo ip netns exec mesh-a target/release/meshlet \
   10.30.0.2
 ```
 
-the expected decision is:
+The expected decision is:
 
 ```text
 MESHLET/1 ROUTE_FOUND 10.30.0.2 10.30.0.0/24 mesh-b
 ```
 
-the lookup still uses longest-prefix matching. overlapping-prefix selection is
-covered by the Rust tests rather than by an artificial learner command. this
-control plane returns `prefix -> node`. endpoint lookup, tunnel setup, and
+The lookup still uses longest-prefix matching. Overlapping-prefix selection is
+covered by the Rust tests rather than by an artificial learner command. This
+control plane returns `prefix -> node`. Endpoint lookup, tunnel setup, and
 installing a Linux route are separate actions; they are not hidden inside this
 command.
 
-observed result:
+Observed result:
 
 ```text
 MESHLET/1 ROUTE_ADVERTISED mesh-b 10.30.0.0/24 120
 MESHLET/1 ROUTE_FOUND 10.30.0.2 10.30.0.0/24 mesh-b
 ```
 
-mesh-a's lookup reached the coordinator from `203.0.113.1`, the public source
-address assigned by mesh-r's NAT. the coordinator selected mesh-b but did not
+Mesh-a's lookup reached the coordinator from `203.0.113.1`, the public source
+address assigned by mesh-r's NAT. The coordinator selected mesh-b but did not
 send a data packet or change either node's Linux routing table.
 
 ## Stage 11: Containers from first principles
 
-a container is an ordinary process whose operating-system view and resource usage are constrained.
+A container is an ordinary process whose operating-system view and resource
+usage are constrained.
 
-namespaces isolate what the process can see:
-    process ids
-    mounts
-    hostname
-    users
-    network interfaces, addresses, routes, and sockets
+**Namespaces isolate what the process can see:**
 
-cgroups account for and limit resources:
-    cpu time
-    memory
-    process count
-    io
+- Process IDs
+- Mounts
+- Hostname
+- Users
+- Network interfaces, addresses, routes, and sockets
 
-an image supplies a filesystem and metadata used to start the process. a container runtime assembles the namespaces, cgroups, filesystem, environment, and process. unlike a virtual machine, a typical container shares the host kernel.
+**Cgroups account for and limit resources:**
 
-container networking commonly automates primitives we are already using manually:
+- CPU time
+- Memory
+- Process count
+- I/O
 
+An image supplies a filesystem and metadata used to start the process. A
+container runtime assembles the namespaces, cgroups, filesystem, environment,
+and process. Unlike a virtual machine, a typical container shares the host
+kernel.
+
+Container networking automates primitives we are already using manually:
+
+```text
 container network namespace
     ↕ veth pair
 host bridge or routed interface
     ↕ routing, nat, and policy
 other containers or external networks
+```
 
-the learning experiment will create the equivalent topology manually, then run the same meshlet process through a container runtime and identify which kernel objects the runtime created. the goal is to understand the abstraction, not memorize docker or kubernetes commands.
+The learning experiment will create the equivalent topology manually, then run the same Meshlet process through a container runtime and identify which kernel objects the runtime created. The goal is to understand the abstraction, not memorize Docker or Kubernetes commands.
 
-container learning path: toy mechanisms before products
+#### Learning approach: toy mechanisms before products
 
-the goal is to predict what the kernel and runtime do, then measure their cost.
-we will not build an image registry, orchestrator, production sandbox, or full
-linux system-call implementation.
+The goal is to predict what the kernel and runtime do, then measure their cost.
+We will not build an image registry, orchestrator, production sandbox, or full
+Linux system-call implementation.
 
-language sequencing:
-    stage 11 uses go for the toy launcher because process creation and linux
-    runtime code are a natural fit for it. go and containers will not be taught
-    simultaneously. first, write an ordinary go program that starts an ordinary
-    child process. only after that code is understood will each linux isolation
-    mechanism be added one at a time.
+#### Language sequencing
 
-    you will write the launcher. each increment will be small enough to explain
-    completely before it is used.
+Stage 11 uses Go for the toy launcher because process creation and Linux
+runtime code are a natural fit for it. Go and containers are not taught
+simultaneously. First, write an ordinary Go program that starts an ordinary
+child process. Only after that code is understood is each Linux isolation
+mechanism added one at a time.
 
-fast-feedback contract:
+Each increment should be small enough to explain completely before it is used.
 
-1. a unit test should finish in about one second
-2. a live mechanism experiment should finish in under five seconds
-3. a focused benchmark should finish in under thirty seconds
-4. reuse one local root filesystem and one release binary; do not rebuild or
+#### Fast-feedback contract
+
+1. A unit test should finish in about one second.
+2. A live mechanism experiment should finish in under five seconds.
+3. A focused benchmark should finish in under thirty seconds.
+4. Reuse one local root filesystem and one release binary; do not rebuild or
    download an image for every experiment
-5. change one isolation boundary at a time and compare against the same native
+5. Change one isolation boundary at a time and compare against the same native
    workload
 
 ### 11.0: Go and ordinary process execution
 
-this is a language prerequisite, not yet a container.
+This is a language prerequisite, not yet a container.
 
-go sequence:
+Go sequence:
 
-1. create a module and one `package main` source file
-2. define `func main`, print values, and read command-line arguments
-3. move validation into a function and return an explicit `error`
-4. construct an `exec.Cmd` describing a child program
-5. connect the child's input and output to the terminal and run it
-6. inspect the parent and child with `ps`
+1. Create a module and one `package main` source file
+2. Define `func main`, print values, and read command-line arguments
+3. Move validation into a function and return an explicit `error`
+4. Construct an `exec.Cmd` describing a child program
+5. Connect the child's input and output to the terminal and run it
+6. Inspect the parent and child with `ps`
 
-every new go term will be defined when it first appears: package, import,
+Every new Go term will be defined when it first appears: package, import,
 function, variable, slice, variadic argument, multiple return values, interface,
-pointer, method, and error. concurrency, garbage collection, interfaces of our
+pointer, method, and error. Concurrency, garbage collection, interfaces of our
 own, and networking are deliberately postponed.
 
-checkpoint:
-    the go launcher runs a selected one-shot command with no isolation. its
+**Checkpoint:**
+    the Go launcher runs a selected one-shot command with no isolation. Its
     behavior is still equivalent to starting an ordinary child process.
 
 ### 11.1: Process plus namespaces
 
-mental model:
-    a container starts as an ordinary process. namespaces change which kernel
-    objects that process can see.
+**Mental model.** A container starts as an ordinary process. Namespaces change
+which kernel objects that process can see.
 
-linux experiment:
-    use `unshare` to give one short-lived meshlet command new PID, hostname, and
-    mount views. use `lsns`, `ps`, and `/proc/PID/ns` to compare the host and
-    isolated views.
+**Linux experiment.** Use `unshare` to give one short-lived Meshlet command new
+PID, hostname, and mount views. Use `lsns`, `ps`, and `/proc/PID/ns` to compare
+the outer and isolated views.
 
-toy implementation:
-    extend the understood go launcher with one namespace flag at a time. it is
-    a teaching launcher, not a security boundary.
+**Toy implementation.** Extend the understood Go launcher with one namespace
+flag at a time. It is a teaching launcher, not a security boundary.
 
-prediction to learn:
-    the program code is unchanged; only its operating-system view changes.
+**Prediction to learn.** The program code is unchanged; only its
+operating-system view changes.
 
 ### 11.2: cgroup v2
 
-mental model:
-    a namespace controls visibility. a cgroup accounts for and limits resource
-    consumption. neither concept implies the other.
+**Mental model.** A namespace controls visibility. A cgroup accounts for and
+limits resource consumption. Neither concept implies the other.
 
-linux experiment:
-    place one deterministic worker in a child cgroup, inspect `cpu.stat` and
-    `memory.current`, then apply one safe CPU or memory limit.
+**Linux experiment.** Place one deterministic worker in a child cgroup,
+inspect `cpu.stat` and `memory.current`, then apply one safe CPU or memory
+limit.
 
-toy implementation:
-    extend the launcher by writing the child PID and limits to the cgroup v2
-    filesystem. no daemon or scheduler will be added.
+**Toy implementation.** Extend the launcher by writing the child PID and
+limits to the cgroup v2 filesystem. No daemon or scheduler is added.
 
-prediction to learn:
-    the process sees the same instructions, but the kernel changes how much CPU
-    or memory it may consume.
+**Prediction to learn.** The process sees the same instructions, but the
+kernel changes how much CPU or memory it may consume.
 
 ### 11.3: Root filesystem and image
 
-mental model:
-    a root filesystem is the directory tree a process sees as `/`. an image is
-    a stored, transportable description of filesystem layers and startup
-    metadata; it is not a running container.
+**Mental model.** A root filesystem is the directory tree a process sees as
+`/`. An image is a stored, transportable description of filesystem layers and
+startup metadata; it is not a running container.
 
-linux experiment:
-    construct one tiny local root filesystem, enter it with a new mount
-    namespace, and observe which files do and do not exist.
+**Linux experiment.** Construct one tiny local root filesystem, enter it with
+a new mount namespace, and observe which files do and do not exist.
 
-toy implementation:
-    add root-directory selection, a private `/proc`, a working directory, and
-    environment variables to the launcher. skip layered filesystems and image
-    distribution.
+**Toy implementation.** Add root-directory selection, a private `/proc`, a
+working directory, and environment variables to the launcher. Skip layered
+filesystems and image distribution.
 
-prediction to learn:
-    process isolation and filesystem packaging are separate mechanisms.
+**Prediction to learn.** Process isolation and filesystem packaging are
+separate mechanisms.
 
 ### 11.4: OCI bundles and `runc`
 
-OCI means Open Container Initiative. its runtime specification defines a
+OCI means Open Container Initiative. Its runtime specification defines a
 portable bundle: a `config.json` description plus a root filesystem. `runc` is
 a low-level OCI runtime that reads that bundle, creates the requested
 namespaces, mounts, and cgroup, and starts the configured process.
 
-experiment:
+**Experiment:**
     express the same toy launcher configuration as an OCI bundle; run it with
     `runc create`, `runc state`, `runc start`, and `runc delete`; compare the
     resulting namespace identifiers and cgroup membership.
 
-important boundary:
-    `runc` mainly constructs and starts the environment. after startup, an
+**Important boundary:**
+    `runc` mainly constructs and starts the environment. After startup, an
     ordinary native-container application still makes system calls directly to
     the host Linux kernel. `runc` is not a proxy on every application request.
 
-official references:
+**Official references:**
     https://github.com/opencontainers/runtime-spec/blob/main/runtime.md
     https://github.com/opencontainers/runc/blob/main/README.md
 
 ### 11.5: Higher-level runtime, briefly
 
-mental model:
+**Mental model:**
     Podman or Docker manages images, defaults, networking, and lifecycle; it
     eventually delegates low-level process creation to an OCI runtime such as
     `runc`.
 
-experiment:
+**Experiment:**
     run the same local workload once with Podman and inspect its process tree,
     namespace identifiers, cgroup, mounts, and generated OCI configuration.
 
-scope boundary:
-    stop after mapping the layers. do not introduce Kubernetes, deployment
+**Scope boundary:**
+    stop after mapping the layers. Do not introduce Kubernetes, deployment
     manifests, registries, or container administration.
 
 ### 11.6: gVisor and `runsc`
 
-gVisor is different from a native `runc` container. its `runsc` OCI runtime
-starts a userspace application kernel called the Sentry. most application
+GVisor is different from a native `runc` container. Its `runsc` OCI runtime
+starts a userspace application kernel called the Sentry. Most application
 system calls are handled by the Sentry instead of going directly to the host
-Linux kernel. gVisor also normally uses its own userspace network stack,
+Linux kernel. GVisor also normally uses its own userspace network stack,
 Netstack.
 
-mental model:
+**Mental model:**
 
-native or runc container:
+Native or runc container:
     application -> host Linux system call
 
-gVisor:
+GVisor:
     application -> Sentry implementation -> limited host Linux operations
 
-toy implementation:
-    build a tiny userspace operation broker. a toy application asks it to
+**Toy implementation:**
+    build a tiny userspace operation broker. A toy application asks it to
     perform only a few abstract operations such as reading a file or sending a
-    UDP datagram. this demonstrates mediation but will not pretend to intercept
+    UDP datagram. This demonstrates mediation but will not pretend to intercept
     arbitrary Linux system calls or provide real sandbox security.
 
-real experiment:
+**Real experiment:**
     run the same OCI bundle with `runsc`, inspect its Sentry process and network
-    view, then compare behavior with `runc`. use the current `systrap` platform
+    view, then compare behavior with `runc`. Use the current `systrap` platform
     first; compare KVM only if the host exposes suitable hardware support.
 
-official references:
-    https://gvisor.dev/docs/
-    https://gvisor.dev/docs/architecture_guide/platforms/
-    https://gvisor.dev/docs/user_guide/networking/
+**Official references:**
+    https://gVisor.dev/docs/
+    https://gVisor.dev/docs/architecture_guide/platforms/
+    https://gVisor.dev/docs/user_guide/networking/
 
 ### 11.7: Performance and low-latency reasoning
 
-measure setup separately from steady-state work:
+Measure setup separately from steady-state work:
 
-cold start:
+**Cold start:**
     elapsed time from launcher invocation until the process is ready
 
-CPU-only loop:
+**CPU-only loop:**
     mostly measures instruction execution without many system calls
 
-system-call loop:
+**System-call loop:**
     exposes boundary-crossing cost
 
-filesystem metadata:
+**Filesystem metadata:**
     repeated open, stat, and close operations
 
-UDP RTT and throughput:
+**UDP RTT and throughput:**
     exposes network-stack copies, scheduling, batching, and queueing
 
-memory:
+**Memory:**
     maximum resident memory and idle per-container overhead
 
-tools:
+**Tools:**
     `/usr/bin/time -v` for elapsed time and memory
     `strace -c` for system-call counts and time
     `perf stat` for cycles, instructions, context switches, and faults
-    meshlet's release-mode UDP benchmark for p50 and p99 latency
+    Meshlet's release-mode UDP benchmark for p50 and p99 latency
 
-comparison order:
+Comparison order:
 
-1. native process
-2. manual namespaces
-3. toy launcher
-4. runc
-5. gVisor systrap
-6. gVisor KVM only when appropriate
+1. Native process
+2. Manual namespaces
+3. Toy launcher
+4. Runc
+5. GVisor systrap
+6. GVisor KVM only when appropriate
 
-expected reasoning:
-    namespaces usually add little steady-state data-path work. cgroup limits can
-    create throttling or contention. runc setup affects startup more than the
-    application's steady-state system-call path. gVisor adds software work at
+**Expected reasoning:**
+    namespaces usually add little steady-state data-path work. Cgroup limits can
+    create throttling or contention. Runc setup affects startup more than the
+    application's steady-state system-call path. GVisor adds software work at
     system-call, filesystem, and networking boundaries, so I/O-heavy workloads
     generally expose more overhead than CPU-heavy workloads.
 
-we will report distributions rather than one timing: warm-up, p50, p99,
-throughput, CPU usage, memory, and context switches. a performance change is
+We will report distributions rather than one timing: warm-up, p50, p99,
+throughput, CPU usage, memory, and context switches. A performance change is
 accepted only when the measured workload and boundary are clearly named.
 
 ## Possible later repository layout
@@ -1526,7 +1593,7 @@ meshlet/
     └── observations.md
 ```
 
-do not split the current single binary merely to imitate a production repository. split crates only when protocol encoding, node data path, coordinator, and relay have independently testable contracts.
+Do not split the current single binary merely to imitate a production repository. Split crates only when protocol encoding, node data path, coordinator, and relay have independently testable contracts.
 
 ## Observation checklist
 
@@ -1556,7 +1623,7 @@ rustup default stable
 
 ## Original implementation target
 
-do not begin with crypto or tun interfaces.
+Do not begin with crypto or TUN interfaces.
 
 The first checkpoint was:
 
@@ -1566,43 +1633,43 @@ The first checkpoint was:
 - UDP server/client
 - Packet captures proving the difference
 
-this checkpoint is complete. the program exposes socket addresses and byte counts, and the namespace lab has demonstrated routing and nat.
+This checkpoint is complete. The program exposes socket addresses and byte counts, and the namespace lab has demonstrated routing and NAT.
 
-that progression prevents the project from becoming a large opaque “vpn implementation” before the underlying packet behavior is understood.
+That progression prevents the project from becoming a large opaque “VPN implementation” before the underlying packet behavior is understood.
 
 ## Summary
 
-meshlet will begin as a socket and linux-routing lab, then grow into an authenticated encrypted overlay with coordination, nat traversal, relay fallback, tun-based packet transport, and subnet routing. every major feature corresponds directly to one of your networking questions and to a concrete distributed-systems concept.
+Meshlet will begin as a socket and Linux-routing lab, then grow into an authenticated encrypted overlay with coordination, NAT traversal, relay fallback, TUN-based packet transport, and subnet routing. Every major feature corresponds directly to one of your networking questions and to a concrete distributed-systems concept.
 
 ## Project purpose
 
-the project’s purpose is to make internet routing, transport ports, public and private addressing, nat, stateful firewalls, containers, cryptographic handshakes, distributed membership, overlay networks, relay fallback, tun interfaces, subnet routing, packet inspection, and latency tradeoffs observable through code and packet traces rather than only through diagrams.
+The project’s purpose is to make internet routing, transport ports, public and private addressing, NAT, stateful firewalls, containers, cryptographic handshakes, distributed membership, overlay networks, relay fallback, TUN interfaces, subnet routing, packet inspection, and latency tradeoffs observable through code and packet traces rather than only through diagrams.
 
 ## Go learning track
 
-go first appears in stage 11.0 because a small process launcher is a concrete,
-bounded program. it teaches source files, functions, arguments, errors, and
-child processes before any linux isolation mechanism is added. the learner,
+Go first appears in stage 11.0 because a small process launcher is a concrete,
+bounded program. It teaches source files, functions, arguments, errors, and
+child processes before any Linux isolation mechanism is added. The learner,
 rather than the assistant, writes each launcher increment.
 
-go also fits this project at a later service boundary, especially a coordinator implementation. coordinators perform request parsing, concurrent network io, timers, maps, serialization, and operational diagnostics: areas where go's small language, garbage collection, goroutines, channels, networking standard library, fast builds, and simple binary deployment are strong.
+Go also fits this project at a later service boundary, especially a coordinator implementation. Coordinators perform request parsing, concurrent network I/O, timers, maps, serialization, and operational diagnostics: areas where Go's small language, garbage collection, goroutines, channels, networking standard library, fast builds, and simple binary deployment are strong.
 
-meshlet's packet data path will remain in rust so the project can study explicit ownership, byte representations, cryptographic state, system calls, tun io, and latency without introducing a garbage-collected runtime into the hottest path.
+Meshlet's packet data path will remain in Rust so the project can study explicit ownership, byte representations, cryptographic state, system calls, TUN I/O, and latency without introducing a garbage-collected runtime into the hottest path.
 
-after the coordinator protocol and authentication rules are stable, implement the same coordinator contract in go and run the rust nodes against both servers. this creates a meaningful language boundary and proves that the protocol, rather than one implementation, is the contract.
+After the coordinator protocol and authentication rules are stable, implement the same coordinator contract in Go and run the Rust nodes against both servers. This creates a meaningful language boundary and proves that the protocol, rather than one implementation, is the contract.
 
-the broader go learning sequence starts from zero:
+The broader Go learning sequence starts from zero:
 
-1. source files, packages, modules, compilation, and the `main` entry point
-2. values, variables, constants, functions, structs, methods, pointers, slices, and maps
-3. interfaces, explicit error values, `defer`, resource lifetime, and cancellation with contexts
-4. goroutines, channels, locks, races, and ownership conventions
-5. udp/http servers, deadlines, bounded inputs, serialization, and tests
-6. garbage collection, allocation, escape analysis, latency, the race detector, benchmarks, and pprof
-7. implement the Meshlet coordinator protocol and compare behavior, failure handling, and performance with the rust version
+1. Source files, packages, modules, compilation, and the `main` entry point
+2. Values, variables, constants, functions, structs, methods, pointers, slices, and maps
+3. Interfaces, explicit error values, `defer`, resource lifetime, and cancellation with contexts
+4. Goroutines, channels, locks, races, and ownership conventions
+5. UDP/HTTP servers, deadlines, bounded inputs, serialization, and tests
+6. Garbage collection, allocation, escape analysis, latency, the race detector, benchmarks, and pprof
+7. Implement the Meshlet coordinator protocol and compare behavior, failure handling, and performance with the Rust version
 
-we will not rewrite the rust packet data path in go merely for syntax practice.
-the launcher teaches operating-system process boundaries; the later second
+We will not rewrite the Rust packet data path in Go merely for syntax practice.
+The launcher teaches operating-system process boundaries; the later second
 coordinator becomes worthwhile when interoperability and control-plane
 concurrency are real learning goals.
 
