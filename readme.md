@@ -1,82 +1,120 @@
-project: meshlet
+# Meshlet
 
-build a small encrypted overlay network in rust on one arch linux machine.
+Build a small encrypted overlay network in Rust on one Arch Linux machine.
 
-implementation index: see `CODEMAP.md` to find code by command, concept, or
-runtime call path.
+> See the [implementation index](CODEMAP.md) to find code by command, concept,
+> or runtime call path.
 
-learning contract
+## Purpose
 
-this repository exists to teach networking from first principles. every stage should answer four questions:
+Meshlet is a learning project, not a production VPN or deployment template. It
+builds networking mechanisms one at a time so their packet paths, state, and
+design tradeoffs remain visible in code. One Linux kernel uses network
+namespaces to imitate nodes, routers, public networks, and private subnets.
+
+The project covers sockets, routing, NAT, stateful firewalls, coordination,
+cryptographic handshakes, direct and relayed paths, TUN overlays, subnet
+routing, and container isolation.
+
+## Reproduce the project
+
+Requirements: Linux, root access for namespace operations, Rust, Go, BusyBox,
+`iproute2`, nftables, and tcpdump.
+
+Build the Rust networking binary and create the simulated network:
+
+```bash
+git clone git@github.com:kennykguo/meshlet.git
+cd meshlet
+rustup default stable
+cargo build --release
+bash namespaces.md
+sudo ip netns exec mesh-a ping -c 1 -W 1 192.0.2.20
+```
+
+Build and run the toy container with its private veth network:
+
+```bash
+cd toy-container
+bash setup-rootfs.sh
+go build -o toy-container .
+sudo ./toy-container --rootfs .rootfs /bin/sh -c \
+  'ip address; ip route; ping -c 1 -W 1 10.200.0.1'
+```
+
+The numbered stages below contain the focused commands for each mechanism.
+
+## Learning contract
+
+This repository exists to teach networking from first principles. Every stage should answer four questions:
 
 1. what problem caused this mechanism to be invented?
 2. what concrete bytes or state does it introduce?
 3. what changes along one packet's path, and what stays the same?
 4. what latency, failure, or security tradeoff does it create?
 
-linux commands are laboratory equipment, not the subject. we will use namespaces, nftables, and routing commands only when they make a fundamental behavior observable. we will not turn this into a system-administration or deployment-automation project.
+Linux commands are laboratory equipment, not the subject. We use namespaces,
+nftables, and routing commands only when they make fundamental behavior
+observable. This is not a system-administration or deployment-automation project.
 
-learner-run commands should include a linux observation mechanism such as a
+Learner-run commands should include a Linux observation mechanism such as a
 network namespace, tcpdump, ip, nftables, or a tun device. correctness and
 negative cases belong in automated code tests run during implementation, not
 in separate learner commands whose only purpose is to prove or disprove a case.
 
-we will also keep three boundaries explicit:
+We keep three boundaries explicit:
 
-concept:
-    the transferable idea, such as route selection, connection state, identity, authenticated encryption, or queueing
+- **Concept:** the transferable idea, such as route selection, connection
+  state, identity, authenticated encryption, or queueing.
+- **Lab mechanism:** the Linux feature used to reproduce it on one machine.
+- **Production extension:** what changes with physical NICs, switches, many
+  nodes, failures, load, and operational ownership.
 
-lab mechanism:
-    the linux feature used to reproduce it on one machine
+## Current checkpoint
 
-production extension:
-    what changes with physical nics, switches, many nodes, failures, load, and operational ownership
+### Completed
 
-current checkpoint
+- TCP and UDP sockets
+- Ethernet/IP/TCP/UDP packet captures
+- Network namespaces and veth links
+- Routing across two networks
+- Private-to-public source NAT and reverse translation
+- UDP round-trip latency measurement
+- Executable stateful-firewall model
+- Live stateful-firewall packet experiment
+- Live coordinator registration through NAT
+- Authenticated coordinator registration and wrong-key rejection
+- Authenticated peer handshake and encrypted echo
+- One-session opaque UDP relay carrying the encrypted exchange
+- Automatic direct-first path selection with relay fallback
+- One ordinary IPv4 echo request and reply transported through TUN and UDP
+- One private subnet reached through `mesh-b` as a subnet router
+- Route advertisement and longest-prefix peer selection
+- Container namespaces, root filesystem, cgroups, synchronization, and veth networking
 
-completed:
-    tcp and udp sockets
-    ethernet/ip/tcp/udp packet captures
-    network namespaces and veth links
-    routing across two networks
-    private-to-public source nat and reverse translation
-    udp round-trip latency measurement
-    executable stateful-firewall model
-    live stateful-firewall packet experiment
-    live coordinator registration through nat
-    authenticated coordinator registration and wrong-key rejection
-    authenticated peer handshake and encrypted echo
-    one-session opaque udp relay carrying the encrypted exchange
-    automatic direct-first path selection with relay fallback
-    one ordinary ipv4 echo request and reply transported through tun and udp
-    one private subnet reached through mesh-b as a subnet router
-    route advertisement and longest-prefix peer selection
+### Implemented, awaiting live observation
 
-implemented, awaiting your live observation:
-    coordinator endpoint lookup and lease expiration
+- Coordinator endpoint lookup and lease expiration
 
-next:
-    toy container mechanisms: namespaces, cgroup v2, root filesystem, runc, and gvisor
+## Fundamentals-first roadmap
 
-fundamentals-first roadmap
+| Stage | Fundamental | Implementation evidence |
+| ---: | --- | --- |
+| 1 | Transport endpoints and byte streams/datagrams | Rust socket code plus TCP/UDP captures |
+| 2 | Local links, IP prefixes, next hops, and routing | TTL and MAC changes across `r0`/`r1` |
+| 3 | Private addressing and NAT | Four-point pre/post translation capture |
+| 4 | Stateful firewall semantics | One outbound flow, its reply, and one rejected inbound flow |
+| 5 | Stable public rendezvous | DNS name and fixed simulated endpoint |
+| 6 | Control plane, membership, leases, and failure uncertainty | Coordinator registration and expiry |
+| 7 | Identity, key agreement, derivation, and authenticated encryption | Authenticated handshake trace and encrypted echo |
+| 8 | Direct connectivity and relay fallback | Probe state machine plus direct/relay traces |
+| 9 | TUN layer-3 overlay | One ordinary IP packet transported through userspace |
+| 10 | Subnets, route advertisement, and longest-prefix matching | Advertised prefix mapped to a peer |
+| 11 | Containers as isolated processes | Namespace/cgroup/veth objects behind one container |
 
-stage	fundamental	implementation evidence
-1	transport endpoints and byte streams/datagrams	rust socket code plus tcp/udp captures
-2	local links, ip prefixes, next hops, and routing	ttl and mac changes across r0/r1
-3	private addressing and nat	four-point pre/post translation capture
-4	stateful firewall semantics	one outbound flow, its reply, and one rejected inbound flow
-5	stable public rendezvous	dns name and fixed simulated endpoint
-6	control plane, membership, leases, and failure uncertainty	coordinator registration and expiry
-7	identity, key agreement, derivation, and authenticated encryption	authenticated handshake trace and encrypted echo
-8	direct connectivity and relay fallback	probe state machine plus direct/relay traces
-9	tun layer-3 overlay	one ordinary ip packet transported through userspace
-10	subnets, route advertisement, and longest-prefix matching	advertised prefix mapped to a peer
-11	containers as isolated processes	namespace/cgroup objects behind one container
-12	wireshark as structured packet evidence	pcap with layer and timing annotations
-13	latency, tail behavior, queueing, and throughput	loopback and routed/nat rtt distributions
+## Target architecture
 
-the finished system will have:
-
+```text
 node a behind nat/firewall
         │
         ├── direct encrypted udp when possible
@@ -84,29 +122,25 @@ node a behind nat/firewall
         └── encrypted relay fallback
         │
 node b on another private subnet
+```
 
 a separate coordination server will distribute identities, addresses, and routes. this recreates the important architectural ideas from the tailscale article without attempting to reproduce wireguard itself: centralized control, distributed data transfer, nat traversal, relay fallback, and subnet routing.
 
 i recommend rust for the main implementation. it exposes socket addresses, byte buffers, packet formats, and state transitions clearly. we will initially avoid async rust and use blocking sockets plus threads so the network mechanics remain visible.
 
-what the final project will demonstrate
-control plane:
-    nodes register identities, public keys, addresses, and routes
+### Architectural planes
 
-data plane:
-    nodes exchange encrypted packets directly over udp
+- **Control plane:** nodes register identities, public keys, addresses, and routes.
+- **Data plane:** nodes exchange encrypted packets directly over UDP.
+- **Relay plane:** forwards ciphertext when direct communication is blocked.
+- **Routing plane:** forwards packets to another private subnet.
+- **Policy plane:** allows or rejects communication between nodes.
 
-relay plane:
-    forwards ciphertext when direct communication is blocked
+### Test topology
 
-routing plane:
-    forwards packets to another private subnet
+The final test topology runs entirely through Linux network namespaces:
 
-policy plane:
-    allows or rejects communication between nodes
-
-the final test topology will run entirely through linux network namespaces:
-
+```text
 private subnet a                           private subnet b
 
 node a                                     node b
@@ -120,43 +154,47 @@ nat/router a ───── simulated internet ───── router b
                        │
               coordination server
                   203.0.113.10
+```
 
 a network namespace is an isolated linux network stack. each namespace has its own interfaces, addresses, routes, sockets, and firewall state. this lets one kernel imitate several computers and routers while sharing the same filesystem and cpu.
 
 10.10.0.0/24 and 10.20.0.0/24 are inside the private-use 10.0.0.0/8 range. 192.0.2.0/24, 198.51.100.0/24, and 203.0.113.0/24 are documentation-only ranges and should not identify real internet hosts.
 
-what this lab can and cannot reproduce
+## Scope and limitations
 
-it can expose:
-    kernel socket behavior
-    ethernet, ip, tcp, udp, icmp, arp, routing, nat, and firewall state
-    coordination protocols, cryptographic handshakes, relay selection, tun packet flow, and subnet routing
-    process scheduling, syscall, queueing, and kernel data-path latency
+### What this lab can expose
 
-it cannot reproduce by itself:
-    physical-link propagation delay
-    switch asic behavior
-    nic dma and interrupt behavior
-    multi-host clock synchronization
-    real internet congestion, loss, path changes, or adversaries
+- Kernel socket behavior
+- Ethernet, IP, TCP, UDP, ICMP, ARP, routing, NAT, and firewall state
+- Coordination protocols, cryptographic handshakes, relay selection, TUN packet flow, and subnet routing
+- Process scheduling, system calls, queueing, and kernel data-path latency
 
-your questions mapped to project stages
-question	stage that answers it
-what is the internet?	simulated internet and router stage
-public address versus private address	namespace and nat stage
-how do public vpns use static addresses?	public coordination and gateway stage
-what does “behind a firewall” mean?	stateful firewall stage
-how does outward client traffic work?	nat connection-tracking stage
-how does the public address forward replies?	nat translation-table stage
-do ports belong to tcp?	tcp and udp socket stage
-how do cryptographic handshakes work?	authenticated handshake stage
-what are subnets?	routing-table stage
-what is a subnet router?	route-advertisement stage
-how does this relate to distributed systems?	membership, discovery, failure, leases, and policy stages
-what is a container?	namespace, cgroup, image, and container-network stage
-how do i inspect packet layers interactively?	wireshark stage
-where does network latency come from?	measurement and low-latency stages
-stage 1: sockets, addresses, and ports
+### What it cannot reproduce by itself
+
+- Physical-link propagation delay
+- Switch ASIC behavior
+- NIC DMA and interrupt behavior
+- Multi-host clock synchronization
+- Real internet congestion, loss, path changes, or adversaries
+
+## Questions mapped to project stages
+
+| Question | Stage that answers it |
+| --- | --- |
+| What is the internet? | Simulated internet and router stage |
+| Public address versus private address? | Namespace and NAT stage |
+| How do public VPNs use static addresses? | Public coordination and gateway stage |
+| What does “behind a firewall” mean? | Stateful firewall stage |
+| How does outward client traffic work? | NAT connection-tracking stage |
+| How does the public address forward replies? | NAT translation-table stage |
+| Do ports belong to TCP? | TCP and UDP socket stage |
+| How do cryptographic handshakes work? | Authenticated handshake stage |
+| What are subnets? | Routing-table stage |
+| What is a subnet router? | Route-advertisement stage |
+| How does this relate to distributed systems? | Membership, discovery, failure, leases, and policy stages |
+| What is a container? | Namespace, cgroup, image, and container-network stage |
+
+## Stage 1: Sockets, addresses, and ports
 
 build four small modes inside one binary:
 
@@ -199,7 +237,7 @@ ethernet frame
 
 we will inspect this with tcpdump.
 
-stage 2: construct a small internet
+## Stage 2: Construct a small internet
 
 the internet is not one giant network owned by one entity.
 
@@ -249,7 +287,7 @@ tcpdump on both router interfaces shows changing mac addresses
 the ip endpoints and transport ports remain stable
 ttl decreases by one router hop
 
-stage 3: private addresses, public addresses, and nat
+## Stage 3: Private addresses, public addresses, and NAT
 
 private ipv4 ranges include:
 
@@ -309,7 +347,7 @@ private side reply:
 
 the experiment matters because it proves the transformation and reverse mapping. the nftables syntax is only how this one-machine lab requests that behavior.
 
-stage 4: “behind a firewall”
+## Stage 4: “Behind a firewall”
 
 a stateful firewall remembers active communication.
 
@@ -401,7 +439,7 @@ nat:
 firewall:
     decides whether a packet may continue
 
-stage 5: static public vpn addresses
+## Stage 5: Static public VPN addresses
 
 a public vpn gateway needs a stable location clients can contact.
 
@@ -432,7 +470,7 @@ the private nodes will always know how to contact them.
 
 this reproduces the important property of a public vpn gateway without renting an actual internet server.
 
-stage 6: control plane and distributed-systems membership
+## Stage 6: Control plane and distributed-systems membership
 
 the control plane distributes decisions and metadata. it is not normally on the per-packet data path:
 
@@ -662,7 +700,7 @@ trusted), encrypted backups, access auditing, and a protected channel to the
 coordinator. public keys may be distributed widely; private keys must never be
 logged or copied into source control.
 
-stage 7: authenticated cryptographic handshake
+## Stage 7: Authenticated cryptographic handshake
 
 we will not implement encryption algorithms ourselves. we will use established implementations but build the handshake protocol and state machine ourselves.
 
@@ -843,7 +881,7 @@ until an experiment gives us a concrete reason to introduce them.
 we use established library implementations and explicit byte encodings.
 production systems do not copy cryptographic primitives into application code.
 
-stage 8: direct connectivity and relay fallback
+## Stage 8: Direct connectivity and relay fallback
 
 connectivity means that packets sent to an endpoint can actually reach the intended node and that replies can return. knowing an ip address is not enough when nat mappings, firewalls, or changing ports affect the path.
 
@@ -982,7 +1020,7 @@ or incorrectly signed response stops the operation instead of being treated as
 a reachability problem. once one path completes the handshake, the client uses
 that session for encrypted data rather than performing a separate probe round
 trip.
-stage 9: overlay addresses and tun interfaces
+## Stage 9: Overlay addresses and TUN interfaces
 
 initially, meshlet will send application messages.
 
@@ -1066,7 +1104,7 @@ authenticated-encryption packet format between the TUN and UDP operations is
 an integration step, not a new networking concept, so the learning path moves
 next to subnet routing.
 
-stage 10: subnets and subnet routers
+## Stage 10: Subnets and subnet routers
 
 i assume “subsets” meant subnets.
 
@@ -1219,7 +1257,7 @@ mesh-a's lookup reached the coordinator from `203.0.113.1`, the public source
 address assigned by mesh-r's NAT. the coordinator selected mesh-b but did not
 send a data packet or change either node's Linux routing table.
 
-stage 11: containers from first principles
+## Stage 11: Containers from first principles
 
 a container is an ordinary process whose operating-system view and resource usage are constrained.
 
@@ -1262,8 +1300,7 @@ language sequencing:
     mechanism be added one at a time.
 
     you will write the launcher. each increment will be small enough to explain
-    completely before it is used. stage 12 remains a separate wireshark stage;
-    packet capture is not required to learn the initial container mechanisms.
+    completely before it is used.
 
 fast-feedback contract:
 
@@ -1275,7 +1312,7 @@ fast-feedback contract:
 5. change one isolation boundary at a time and compare against the same native
    workload
 
-11.0: go and ordinary process execution
+### 11.0: Go and ordinary process execution
 
 this is a language prerequisite, not yet a container.
 
@@ -1297,7 +1334,7 @@ checkpoint:
     the go launcher runs a selected one-shot command with no isolation. its
     behavior is still equivalent to starting an ordinary child process.
 
-11.1: process plus namespaces
+### 11.1: Process plus namespaces
 
 mental model:
     a container starts as an ordinary process. namespaces change which kernel
@@ -1315,7 +1352,7 @@ toy implementation:
 prediction to learn:
     the program code is unchanged; only its operating-system view changes.
 
-11.2: cgroup v2
+### 11.2: cgroup v2
 
 mental model:
     a namespace controls visibility. a cgroup accounts for and limits resource
@@ -1333,7 +1370,7 @@ prediction to learn:
     the process sees the same instructions, but the kernel changes how much CPU
     or memory it may consume.
 
-11.3: root filesystem and image
+### 11.3: Root filesystem and image
 
 mental model:
     a root filesystem is the directory tree a process sees as `/`. an image is
@@ -1352,7 +1389,7 @@ toy implementation:
 prediction to learn:
     process isolation and filesystem packaging are separate mechanisms.
 
-11.4: OCI bundles and `runc`
+### 11.4: OCI bundles and `runc`
 
 OCI means Open Container Initiative. its runtime specification defines a
 portable bundle: a `config.json` description plus a root filesystem. `runc` is
@@ -1373,7 +1410,7 @@ official references:
     https://github.com/opencontainers/runtime-spec/blob/main/runtime.md
     https://github.com/opencontainers/runc/blob/main/README.md
 
-11.5: higher-level runtime, briefly
+### 11.5: Higher-level runtime, briefly
 
 mental model:
     Podman or Docker manages images, defaults, networking, and lifecycle; it
@@ -1388,7 +1425,7 @@ scope boundary:
     stop after mapping the layers. do not introduce Kubernetes, deployment
     manifests, registries, or container administration.
 
-11.6: gVisor and `runsc`
+### 11.6: gVisor and `runsc`
 
 gVisor is different from a native `runc` container. its `runsc` OCI runtime
 starts a userspace application kernel called the Sentry. most application
@@ -1420,7 +1457,7 @@ official references:
     https://gvisor.dev/docs/architecture_guide/platforms/
     https://gvisor.dev/docs/user_guide/networking/
 
-11.7: performance and low-latency reasoning
+### 11.7: Performance and low-latency reasoning
 
 measure setup separately from steady-state work:
 
@@ -1468,84 +1505,9 @@ we will report distributions rather than one timing: warm-up, p50, p99,
 throughput, CPU usage, memory, and context switches. a performance change is
 accepted only when the measured workload and boundary are clearly named.
 
-stage 12: wireshark and evidence-driven debugging
+## Possible later repository layout
 
-tcpdump and wireshark observe the same packet layers through libpcap-compatible captures. tcpdump is compact and scriptable; wireshark provides interactive decoding, filtering, stream following, timing views, and packet-by-packet field inspection.
-
-we will save pcap files rather than rely only on terminal text:
-
-tcpdump -i interface -w experiment.pcap
-
-useful wireshark display filters include:
-
-arp
-icmp
-udp.port == 8000
-tcp.port == 8000
-ip.addr == 10.10.0.2
-tcp.flags.syn == 1
-
-the workflow is:
-
-1. state a prediction
-2. capture at the relevant boundary
-3. find the first field that differs from the prediction
-4. map that field back to route, neighbor, socket, nat, firewall, or application state
-
-stage 13: latency and performance as a recurring lens
-
-latency is elapsed time. rtt is round-trip time from request send through reply receipt. throughput is completed work per unit time. optimizing one can worsen the other when batching or queueing is introduced.
-
-the first benchmark uses stop-and-wait udp: only one request is outstanding, and the server echoes an eight-byte sequence number. the client uses a monotonic clock, performs warm-up exchanges, avoids per-packet printing and allocation, and reports min, p50, p99, and max.
-
-benchmark modes:
-
-meshlet udp-bench-server [BIND_ADDRESS]
-meshlet udp-rtt-client [BIND_ADDRESS] [SERVER_ADDRESS] [SAMPLES]
-
-the udp client calls connect, but connected udp does not perform a handshake. it records a default peer in the kernel, permits send and recv without repeating the address, and filters incoming datagrams to that peer.
-
-build benchmarks with optimization:
-
-cargo build --release
-
-loopback baseline inside mesh-a:
-
-sudo ip netns exec mesh-a target/release/meshlet udp-bench-server 127.0.0.1:8000
-sudo ip netns exec mesh-a target/release/meshlet udp-rtt-client 127.0.0.1:0 127.0.0.1:8000 10000
-
-routed and nat path:
-
-sudo ip netns exec mesh-b target/release/meshlet udp-bench-server 192.0.2.20:8000
-sudo ip netns exec mesh-a target/release/meshlet udp-rtt-client 10.10.0.2:0 192.0.2.20:8000 10000
-
-percentiles describe a distribution:
-
-p50:
-    half the samples completed at or below this time
-
-p99:
-    ninety-nine percent completed at or below this time
-
-tail latency:
-    the slow end of the distribution, often caused by scheduling, queueing, cache misses, contention, retransmission, or one-time state creation
-
-the measurement sequence is:
-
-1. loopback baseline
-2. routed namespace path
-3. routed plus nat path
-4. cold versus warm neighbor and connection-tracking state
-5. payload sizes around mtu boundaries
-6. cpu affinity and scheduler jitter
-7. bursts, socket buffers, and queueing
-8. multiple in-flight messages: latency versus throughput
-9. system-call batching
-10. physical nic queues, dma, interrupts, rss, numa, kernel bypass, rdma, and dpdk
-
-the one-machine namespace lab can measure kernel and scheduler costs. physical-nic and multi-host conclusions require separate hardware measurements.
-
-possible later repository layout
+```text
 meshlet/
 ├── crates/
 │   ├── meshlet-proto/
@@ -1562,66 +1524,61 @@ meshlet/
 │   └── capture-experiment.sh
 └── notes/
     └── observations.md
+```
 
 do not split the current single binary merely to imitate a production repository. split crates only when protocol encoding, node data path, coordinator, and relay have independently testable contracts.
 
-when an observation changes the mental model, record:
+## Observation checklist
 
-what packet was sent
-which headers changed
-which address was private
-which address was public
-which router table entry was used
-which state or decision changed the result
-arch linux setup
+When an observation changes the mental model, record:
+
+- What packet was sent
+- Which headers changed
+- Which address was private
+- Which address was public
+- Which router-table entry was used
+- Which state or decision changed the result
+
+## Arch Linux setup
+
+```bash
 sudo pacman -S rustup iproute2 nftables tcpdump conntrack-tools
 rustup default stable
+```
 
-optional packet inspection:
+| Tool | Purpose |
+| --- | --- |
+| `ip` | Interfaces, addresses, routes, and namespaces |
+| `nft` | Firewall and NAT rules |
+| `tcpdump` | Raw packet observation |
+| `conntrack` | Kernel NAT and connection-state table |
+| `cargo` | Building the Rust programs |
 
-sudo pacman -S wireshark-cli
-
-the relevant tools are:
-
-ip:
-    interfaces, addresses, routes, namespaces
-
-nft:
-    firewall and nat rules
-
-tcpdump:
-    raw packet observation
-
-conntrack:
-    kernel nat and connection-state table
-
-cargo:
-    building the rust programs
-original implementation target
+## Original implementation target
 
 do not begin with crypto or tun interfaces.
 
-the first checkpoint is:
+The first checkpoint was:
 
-one rust binary
-four modes
-tcp server/client
-udp server/client
-packet captures proving the difference
+- One Rust binary
+- Four modes
+- TCP server/client
+- UDP server/client
+- Packet captures proving the difference
 
 this checkpoint is complete. the program exposes socket addresses and byte counts, and the namespace lab has demonstrated routing and nat.
 
 that progression prevents the project from becoming a large opaque “vpn implementation” before the underlying packet behavior is understood.
 
-summary
+## Summary
 
 meshlet will begin as a socket and linux-routing lab, then grow into an authenticated encrypted overlay with coordination, nat traversal, relay fallback, tun-based packet transport, and subnet routing. every major feature corresponds directly to one of your networking questions and to a concrete distributed-systems concept.
 
-project purpose
+## Project purpose
 
 the project’s purpose is to make internet routing, transport ports, public and private addressing, nat, stateful firewalls, containers, cryptographic handshakes, distributed membership, overlay networks, relay fallback, tun interfaces, subnet routing, packet inspection, and latency tradeoffs observable through code and packet traces rather than only through diagrams.
 
-golang learning track
+## Go learning track
 
 go first appears in stage 11.0 because a small process launcher is a concrete,
 bounded program. it teaches source files, functions, arguments, errors, and
@@ -1650,4 +1607,6 @@ coordinator becomes worthwhile when interoperability and control-plane
 concurrency are real learning goals.
 
 
-level 4-7 networking principles
+---
+
+*Learning scope: level 4–7 networking principles.*
