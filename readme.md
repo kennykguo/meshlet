@@ -24,7 +24,7 @@ Requirements: Linux, root access for namespace operations, Rust, Go, BusyBox,
 Build the Rust networking binary and create the simulated network:
 
 ```bash
-git clone git@github.com:kennykguo/meshlet.git
+git clone --recurse-submodules git@github.com:kennykguo/meshlet.git
 cd meshlet
 rustup default stable
 cargo build --release
@@ -32,9 +32,11 @@ bash namespaces.md
 sudo ip netns exec mesh-a ping -c 1 -W 1 192.0.2.20
 ```
 
-Build and run the toy container with its private veth network:
+Build and run the [Mini Container](https://github.com/kennykguo/mini-container)
+submodule with its private veth network:
 
 ```bash
+git submodule update --init --recursive
 cd toy-container
 bash setup-rootfs.sh
 go build -o toy-container .
